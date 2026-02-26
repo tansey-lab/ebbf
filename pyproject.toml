@@ -1,0 +1,31 @@
+[project]
+name = "ebbf"
+version = "1.0.0"
+description = "EBB&Flow: Empirical Bayes Bootstrapping and Flow Matching"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {file = "LICENSE.txt"}
+keywords = ['diffusion model', 'flow matching', 'spatial transcriptomics', 'transcript assignment', 'cell segmentation']
+authors = [
+    {name = "Christopher Tosh", email = "christopher.j.tosh@gmail.com" }
+]
+maintainers = [
+    {name = "Christopher Tosh", email = "christopher.j.tosh@gmail.com" }
+]
+classifiers = [
+    'Intended Audience :: Science/Research',
+    'Programming Language :: Python'
+]
+
+dependencies = [
+        "numpy",
+        "tqdm",
+        "scipy",
+        "torch", 
+        "einops", 
+        "datasets", 
+]
+
+[build-system]
+requires = ["setuptools>=43.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
