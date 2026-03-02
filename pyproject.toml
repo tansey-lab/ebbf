@@ -69,6 +69,12 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+ignore = [
+    "N803",  # Argument name should be lowercase (common in ML: X for matrices)
+    "N806",  # Variable name should be lowercase (common in ML: B, K, M for batch/dim)
+    "N812",  # Lowercase imported as non-lowercase (common: torch.nn.functional as F)
+    "N817",  # CamelCase imported as acronym (common: DistributedDataParallel as DDP)
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
