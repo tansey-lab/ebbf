@@ -1,0 +1,29 @@
+import argparse
+import os
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+import torch
+import torch.multiprocessing as mp
+
+from omegaconf import OmegaConf
+
+from ebbf.train_parallel import main as train_main
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Train EBB&Flow model")
+    parser.add_argument('--config', type=str, required=True, help="Path to config YAML file")
+    args = parser.parse_args()
+
+    config = OmegaConf.load(args.config)
+
+    if 'prev_model_folder' in config:
+        prev_model_folder = config.prev_model_folder
+        uconfig = OmegaConf.load(os.path.join(prev_model_folder, "config.yaml"))
+        uconfig.model_initialization = os.path.join(prev_model_folder, "chkpoint.pt")
+        uconfig.data.tma_fname = os.path.join(prev_model_folder, "tma.npz")
+        config = OmegaConf.merge(uconfig, config)
+
+    world_size = torch.cuda.device_count()
+    mp.spawn(train_main, args=(world_size, config), nprocs=world_size)

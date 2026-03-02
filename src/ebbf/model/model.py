@@ -1,6 +1,6 @@
 from omegaconf import OmegaConf
 from ebbf.model.flownet import TxFlowUNet
-from ndiff.model.ema import EMA
+from ebbf.model.ema import EMA
 import torch
 
 
