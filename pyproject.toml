@@ -47,6 +47,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "nf-core",
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "ruff>=0.1.0",
@@ -75,6 +76,7 @@ pythonpath = ["src"]
 
 [dependency-groups]
 dev = [
+    "nf-core",
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "ruff>=0.1.0",
