@@ -148,8 +148,7 @@ if __name__ == "__main__":
     tma = TMA.load(config.data.tma_fname)
     curr_bboxes = np.array_split(tma.boxes, n_workers)[worker_id]
 
-    nuc_ctype_idx = tma.nuc_ctype_idx if config.data.use_ctypes else np.zeros_like(tma.nuc_ctype_idx)
-    dataset = TxPatchDataset( 
+    dataset = TxPatchDataset(
         boxes=curr_bboxes,
         tx_dataset=tx_dataset,
         nuc_xy=tma.nuc_xy,
@@ -158,9 +157,9 @@ if __name__ == "__main__":
         patch_padding=config.data.patch_size,
         overlap=20,  # x_overlap = y_overlap
         max_tx=config.data.max_tx,
-        shuffle=True, 
+        shuffle=True,
         nuc_ellipse_mat=tma.nuc_ellipse_mat,
-        nuc_ctype=tma.nuc_ctype_idx)
+        nuc_ctype=np.zeros_like(tma.nuc_ctype_idx))
 
     ## Load in the model
     state_dict = torch.load(os.path.join(model_directory, "chkpoint.pt"), map_location="cpu")

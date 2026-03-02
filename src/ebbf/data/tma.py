@@ -272,52 +272,45 @@ def _compute_histograms(
     
     return(results)
 
-def _compute_boxes(tma_shapes:gpd.GeoDataFrame, box_width:float):
-    
-    all_boxes = []
-    for punch in tma_shapes.geometry.values:
-        min_x, min_y, max_x, max_y = punch.bounds
-        
-        L_x = max_x - min_x
-        L_y = max_y - min_y
-        
-        
-        n_x = int(L_x//box_width + 1)
-        n_y = int(L_y//box_width + 1)
-        
-        a_x = min_x + np.arange(n_x)*(L_x - box_width)/(n_x - 1)
-        a_y = min_y + np.arange(n_y)*(L_y - box_width)/(n_y - 1)
-        
-        boxes = np.array([(xmin, ymin, xmin+box_width, ymin+box_width)  for xmin, ymin in product(a_x, a_y)])
-        all_boxes.append(boxes)
-    boxes = np.concatenate(all_boxes)
-    return(boxes)
+def _compute_boxes_from_bounds(min_x:float, min_y:float, max_x:float, max_y:float, box_width:float):
+    """Compute a grid of boxes covering the given bounding box."""
+    L_x = max_x - min_x
+    L_y = max_y - min_y
 
-def _estimate_per_box_ctype_distance_histograms(
+    n_x = max(1, int(L_x // box_width + 1))
+    n_y = max(1, int(L_y // box_width + 1))
+
+    if n_x == 1:
+        a_x = np.array([min_x])
+    else:
+        a_x = min_x + np.arange(n_x) * (L_x - box_width) / (n_x - 1)
+
+    if n_y == 1:
+        a_y = np.array([min_y])
+    else:
+        a_y = min_y + np.arange(n_y) * (L_y - box_width) / (n_y - 1)
+
+    boxes = np.array([(xmin, ymin, xmin + box_width, ymin + box_width) for xmin, ymin in product(a_x, a_y)])
+    return boxes
+
+
+def _estimate_per_box_distance_histograms(
         nuc_hist:csr_array,
-        nucs:gpd.GeoDataFrame,
-        boxes:np.ndarray, 
-        ctype2index:dict[str,int])->np.ndarray:
-    
+        nuc_xy:np.ndarray,
+        boxes:np.ndarray)->np.ndarray:
+    """Estimate distance histograms per box."""
     n_bins = nuc_hist.shape[1]
-    n_ctypes = len(ctype2index)
     n_boxes = boxes.shape[0]
-    hist_array = np.zeros((n_boxes, (n_ctypes+1), n_bins), dtype=int)
+    # Shape: (n_boxes, 1, n_bins) - single dimension for compatibility
+    hist_array = np.zeros((n_boxes, 1, n_bins), dtype=int)
 
     for i, box in enumerate(tqdm(boxes)):
-        box_mask = ((nucs['x']>box[0])&(nucs['y']>box[1])&(nucs['x']<box[2])&(nucs['y']<box[3])).values
-
+        box_mask = ((nuc_xy[:,0] > box[0]) & (nuc_xy[:,1] > box[1]) &
+                    (nuc_xy[:,0] < box[2]) & (nuc_xy[:,1] < box[3]))
         nuc_hist_box = nuc_hist[box_mask]
-        nucs_box = nucs[box_mask]
+        hist_array[i, 0, :] = nuc_hist_box.sum(axis=0)
 
-        for ctype, cidx in ctype2index.items():
-            ctype_mask = nucs_box['cell_type_assignment'].values == ctype
-            if np.any(ctype_mask):
-                hist_array[i, cidx,:] = nuc_hist_box[ctype_mask].sum(axis=0)
-        
-        hist_array[i,-1,:] = nuc_hist_box.sum(axis=0)
-
-    return(hist_array)
+    return hist_array
 
 def _compute_polygon_triangulation(polygons):
     all_triangles = shapely.constrained_delaunay_triangles(polygons)
@@ -333,35 +326,45 @@ def _compute_polygon_triangulation(polygons):
     return(all_triangle_xy, all_triangle_probs)
 
 
-def process_tma(
-    tma_folder:str,
-    tma_shapes_fname:str,
-    max_dist:float=40, 
-    n_bins:int=100, 
+def process_zarr(
+    zarr_dir:str,
+    max_dist:float=40,
+    n_bins:int=100,
     box_width:float=400,
     nuc_density_per_um2:float=1e-4):
+    """
+    Process a SpatialData zarr directory into a TMA object.
 
+    Args:
+        zarr_dir: Path to a SpatialData zarr directory containing:
+            - points/transcripts/points.parquet (or points.parquet/)
+            - shapes/nucleus_boundaries/shapes.parquet
+            - shapes/cell_boundaries/shapes.parquet (optional)
+        max_dist: Maximum distance for histogram binning
+        n_bins: Number of histogram bins
+        box_width: Width of spatial boxes for sampling
+        nuc_density_per_um2: Minimum nucleus density threshold for boxes
+    """
     num_workers = len(os.sched_getaffinity(0))
 
-    gene_panel_fname = os.path.join(tma_folder, "gene_panel.json")
-    celltype_assignments_fname = os.path.join(tma_folder, "modulator_celltype_assignments.parquet")
-    points_folder = os.path.join(tma_folder, "spatialdata.zarr/points/transcripts/points.parquet")
-    nucs_fname = os.path.join(tma_folder, "spatialdata.zarr/shapes/nucleus_boundaries/shapes.parquet")
-    cells_fname = os.path.join(tma_folder, "spatialdata.zarr/shapes/cell_boundaries/shapes.parquet")
+    # Determine paths - handle both directory and file parquet formats
+    points_path = os.path.join(zarr_dir, "points/transcripts/points.parquet")
+    if os.path.isdir(points_path):
+        points_folder = points_path
+    else:
+        # Try the parent directory (for partitioned parquet)
+        points_folder = os.path.join(zarr_dir, "points/transcripts")
 
-    ## Read gene panel
-    ## OLD WAY
-    # with open(gene_panel_fname, 'r') as io:
-    #     gene_panel = json.load(io)
-    # panel = np.unique([x['type']['data']['name'] for x in gene_panel['payload']['targets'] if x['type']['descriptor']=='gene']).astype(object)
-    # gene2idx = {x:i for i,x in enumerate(panel)}
-    ## New way
+    nucs_fname = os.path.join(zarr_dir, "shapes/nucleus_boundaries/shapes.parquet")
+    cells_fname = os.path.join(zarr_dir, "shapes/cell_boundaries/shapes.parquet")
+
+    ## Read gene panel from transcripts
     df = pl.scan_parquet(points_folder)
     df = df.filter(pl.col("is_gene"))
     df = df.select(["feature_name"]).unique().collect().to_pandas()
     panel = np.unique(df['feature_name'].values)
     gene2idx = {x:i for i,x in enumerate(panel)}
-    
+
     ## Read points/nucleus shapes
     points_dataset = ds.dataset(points_folder, format='parquet')
     nucs = gpd.read_parquet(nucs_fname)
@@ -369,7 +372,7 @@ def process_tma(
     cell_id2idx = {x:i for i,x in enumerate(nuc_cell_id)}
     S, _, _, c = approximate_ellipse(nucs.geometry.values)
 
-    ## Read cell shapes
+    ## Read cell shapes (optional)
     if os.path.isfile(cells_fname):
         print("Computing cell polygons")
         cells = gpd.read_parquet(cells_fname)
@@ -381,8 +384,8 @@ def process_tma(
     else:
         cell_triangle_xy, cell_triangle_probs = None, None
         cell_triangle_num = None
-    
-    ## Read cell assignments and count them
+
+    ## Count transcripts per cell
     df = pl.scan_parquet(points_folder)
     df = df.filter((pl.col("cell_id")!="UNASSIGNED")&pl.col("is_gene"))
     cell_counts = df.group_by('cell_id').len().collect().to_pandas()
@@ -391,95 +394,88 @@ def process_tma(
         if cid in cell_id2idx:
             nuc_cell_counts[cell_id2idx[cid]] = count
 
-    ## Read cell types
-    ctypes = pd.read_parquet(celltype_assignments_fname)
-    cell_id2ctypes = dict(zip(ctypes.index.values, ctypes['cell_type_assignment'].values))
-    unique_cell_types = np.setdiff1d(np.unique(ctypes['cell_type_assignment'].astype(str)), ['nan'])
-    ctype2index = {x:i for i,x in enumerate(unique_cell_types)}
-    
     print("Computing histograms/count matrices")
     result = _compute_histograms(
-        points_dataset, S, c, cell_id2idx, gene2idx, 
+        points_dataset, S, c, cell_id2idx, gene2idx,
         n_bins=n_bins, max_dist=max_dist, num_workers=(num_workers//2))
 
     nuc_gene_counts:csr_array = result['nuc_gene_counts']
 
-    ## Add spatial and cell type info to nucs
-    nucs['x'] = c[:,0]
-    nucs['y'] = c[:,1]
-    nucs['cell_type_assignment'] = nucs.index.map(cell_id2ctypes).astype(str)
+    ## Compute boxes from nucleus bounding box
+    min_x, min_y = c.min(axis=0)
+    max_x, max_y = c.max(axis=0)
+    boxes = _compute_boxes_from_bounds(min_x, min_y, max_x, max_y, box_width)
 
-    ctype2index_plus_nan = ctype2index.copy()
-    ctype2index_plus_nan['nan'] = -1
-    nucs['cell_type_idx'] = nucs['cell_type_assignment'].map(ctype2index_plus_nan)
-
-    ## Create boxes based on punch shapes
-    tma_shapes = gpd.read_parquet(tma_shapes_fname)
-    tma_shapes = tma_shapes[tma_shapes['Donor Block ID']!='KIDNEY MARKER']
-    boxes = _compute_boxes(tma_shapes, box_width)
-
-    ## Filter out the boxes that are too empty
-    nuc_count_thresh = nuc_density_per_um2*(box_width**2)
-    n_nucs_per_box = np.array([np.count_nonzero((nucs['x']>box[0])&(nucs['y']>box[1])&(nucs['x']<box[2])&(nucs['y']<box[3])) for box in boxes])
+    ## Filter out boxes that are too empty
+    nuc_count_thresh = nuc_density_per_um2 * (box_width ** 2)
+    n_nucs_per_box = np.array([
+        np.count_nonzero((c[:,0] > box[0]) & (c[:,1] > box[1]) &
+                         (c[:,0] < box[2]) & (c[:,1] < box[3]))
+        for box in boxes
+    ])
     boxes = boxes[n_nucs_per_box >= nuc_count_thresh]
 
-    print("Estimating histogram per ctype/box")
+    print("Estimating distance histograms per box")
 
     ## Centroid histograms
-    centroid_hist_array = _estimate_per_box_ctype_distance_histograms(result['nuc_centroid_hist'], nucs, boxes, ctype2index)
+    centroid_hist_array = _estimate_per_box_distance_histograms(
+        result['nuc_centroid_hist'], c, boxes)
 
     ## Ellipse histograms
-    ellipse_hist_array = _estimate_per_box_ctype_distance_histograms(result['nuc_ellipsoid_hist'], nucs, boxes, ctype2index)
+    ellipse_hist_array = _estimate_per_box_distance_histograms(
+        result['nuc_ellipsoid_hist'], c, boxes)
 
     ## Finalize stats
     nuc_total_tx_counts = nuc_gene_counts.sum(axis=1)
     nuc_gene_counts:coo_array = nuc_gene_counts.tocoo()
+
+    # No cell types - set all to 0
+    nuc_ctype_idx = np.zeros(len(nuc_cell_id), dtype=np.int64)
+
     tma = TMA(
-        boxes=boxes, 
+        boxes=boxes,
         centroid_hist_array=centroid_hist_array,
         ellipse_hist_array=ellipse_hist_array,
         max_dist=max_dist,
         nuc_cell_id=nuc_cell_id,
         nuc_total_tx_counts=nuc_total_tx_counts,
-        nuc_ctype_idx=nucs['cell_type_idx'].values,
+        nuc_ctype_idx=nuc_ctype_idx,
         nuc_cell_counts=nuc_cell_counts,
         nuc_xy=c,
         nuc_ellipse_mat=S,
         nuc_countmat_nuc_idx=nuc_gene_counts.row,
         nuc_countmat_gene_idx=nuc_gene_counts.col,
-        nuc_countmat_counts=nuc_gene_counts.data, 
-        genes=panel, 
-        cell_types=unique_cell_types, 
+        nuc_countmat_counts=nuc_gene_counts.data,
+        genes=panel,
         cell_triangle_num=cell_triangle_num,
-        cell_triangle_xy=cell_triangle_xy, 
+        cell_triangle_xy=cell_triangle_xy,
         cell_triangle_probs=cell_triangle_probs)
-    
+
     return(tma)
 
 
 class TMA:
     def __init__(
-            self, 
-            boxes:np.ndarray, 
+            self,
+            boxes:np.ndarray,
             centroid_hist_array:np.ndarray,
             ellipse_hist_array:np.ndarray,
             max_dist:float,
             nuc_cell_id:np.ndarray,
-            nuc_total_tx_counts:np.ndarray, 
+            nuc_total_tx_counts:np.ndarray,
             nuc_ctype_idx:np.ndarray,
             nuc_cell_counts:np.ndarray,
             nuc_xy:np.ndarray,
             nuc_ellipse_mat:np.ndarray,
-            nuc_countmat_nuc_idx:np.ndarray, 
-            nuc_countmat_gene_idx:np.ndarray, 
-            nuc_countmat_counts:np.ndarray, 
-            genes:np.ndarray, 
-            cell_types:np.ndarray,
+            nuc_countmat_nuc_idx:np.ndarray,
+            nuc_countmat_gene_idx:np.ndarray,
+            nuc_countmat_counts:np.ndarray,
+            genes:np.ndarray,
             cell_triangle_num:Optional[list[np.ndarray]]=None,
-            cell_triangle_xy:Optional[list[np.ndarray]]=None, 
-            cell_triangle_probs:Optional[list[np.ndarray]]=None, 
+            cell_triangle_xy:Optional[list[np.ndarray]]=None,
+            cell_triangle_probs:Optional[list[np.ndarray]]=None,
             **kwargs):
-        
+
         self.boxes = boxes
         self.centroid_hist_array = centroid_hist_array
         self.ellipse_hist_array = ellipse_hist_array
@@ -493,7 +489,6 @@ class TMA:
         self.nuc_countmat_gene_idx = nuc_countmat_gene_idx
         self.nuc_countmat_counts = nuc_countmat_counts
         self.genes = genes
-        self.cell_types = cell_types
         self.nuc_cell_counts = nuc_cell_counts
 
         if cell_triangle_xy is None:
@@ -504,7 +499,7 @@ class TMA:
             self.cell_triangle_num = cell_triangle_num
             self.cell_triangle_xy = cell_triangle_xy
             self.cell_triangle_probs = cell_triangle_probs
-            
+
         self.__dict__.update(kwargs)
 
     def save(self, fname:str):
@@ -519,13 +514,12 @@ class TMA:
         return tma
     
     def get_nuc_dataset(
-            self, 
-            patch_size:float, 
-            patch_padding:float, 
-            dataset_size:int, 
-            min_nucs:int, 
-            use_ctypes:bool):
-        
+            self,
+            patch_size:float,
+            patch_padding:float,
+            dataset_size:int,
+            min_nucs:int):
+
         n_nucs = self.nuc_xy.shape[0]
         n_genes = self.genes.shape[0]
 
@@ -533,21 +527,22 @@ class TMA:
         nuc_total_sums = nuc2genes.sum(axis=1)[:,np.newaxis]
         nuc2gene_probs = (nuc2genes/nuc_total_sums).tocsr()
 
-        nuc2ctypes = self.nuc_ctype_idx if use_ctypes else np.zeros_like(self.nuc_ctype_idx)
+        # Always use zeros for cell types (no cell type info)
+        nuc2ctypes = np.zeros_like(self.nuc_ctype_idx)
         dataset = NuclearPatchDataset(
-            nuc2xy=self.nuc_xy, 
-            nuc2total_gene_count=self.nuc_total_tx_counts, 
-            nuc2gene_probs=nuc2gene_probs, 
+            nuc2xy=self.nuc_xy,
+            nuc2total_gene_count=self.nuc_total_tx_counts,
+            nuc2gene_probs=nuc2gene_probs,
             nuc2ctype=nuc2ctypes,
             nuc2cell_count=self.nuc_cell_counts,
-            punch_bounds=self.boxes, 
-            patch_size=patch_size, 
-            patch_padding=patch_padding, 
-            dataset_size=dataset_size, 
-            min_nucs=min_nucs, 
-            nuc2ellipse_mat=self.nuc_ellipse_mat, 
-            cell_triangle_num=(self.cell_triangle_num if self.cell_triangle_num.shape[0]>0 else None), 
-            cell_triangle_xy=(self.cell_triangle_xy if self.cell_triangle_xy.shape[0]>0 else None), 
+            punch_bounds=self.boxes,
+            patch_size=patch_size,
+            patch_padding=patch_padding,
+            dataset_size=dataset_size,
+            min_nucs=min_nucs,
+            nuc2ellipse_mat=self.nuc_ellipse_mat,
+            cell_triangle_num=(self.cell_triangle_num if self.cell_triangle_num.shape[0]>0 else None),
+            cell_triangle_xy=(self.cell_triangle_xy if self.cell_triangle_xy.shape[0]>0 else None),
             cell_triangle_probs=(self.cell_triangle_probs if self.cell_triangle_probs.shape[0]>0 else None))
         return(dataset)
     

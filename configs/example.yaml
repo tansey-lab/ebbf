@@ -17,7 +17,6 @@ data:
   hist_mode: punch+ctype
   corr_mode: punch
   max_nuc_dropout_prob: 0.2
-  use_ctypes: False
   triangle_dirichlet_scale: 25.0
   max_cell_expansion_factor: 1.5
   max_noise_prob: 0.15

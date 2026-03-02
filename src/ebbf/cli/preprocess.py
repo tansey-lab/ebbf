@@ -1,78 +1,31 @@
 import argparse
 import os
-import json
 
 import pandas as pd
-import geopandas as gpd
-import shapely
 import polars as pl
 
 from ebbf.utils import compute_polygons
-from ebbf.data.tma import process_tma
+from ebbf.data.tma import process_zarr
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Preprocess Xenium data for EBB&Flow")
-    parser.add_argument('--cancer', type=str, required=True, help="Cancer type (e.g., 'coad')")
-    parser.add_argument('--xenium_folder', type=str, required=True, help="Path to Xenium data folder")
-    parser.add_argument('--tma_folder', type=str, required=True, help="Output TMA folder path")
+    parser = argparse.ArgumentParser(description="Preprocess spatial transcriptomics data for EBB&Flow")
+    parser.add_argument('--zarr_dir', type=str, required=True,
+                        help="Path to SpatialData zarr directory")
+    parser.add_argument('--output', type=str, required=True,
+                        help="Output path for tma.npz file")
+    parser.add_argument('--box_width', type=float, default=400,
+                        help="Box width for spatial sampling (default: 400)")
+    parser.add_argument('--max_dist', type=float, default=40,
+                        help="Maximum distance for histogram binning (default: 40)")
+    parser.add_argument('--n_bins', type=int, default=100,
+                        help="Number of histogram bins (default: 100)")
     args = parser.parse_args()
 
-    cancer = args.cancer
-    tma_folder = args.tma_folder
-    xenium_folder = args.xenium_folder
-
-    os.makedirs(tma_folder, exist_ok=True)
-
-    tx_folder = os.path.join(tma_folder, "spatialdata.zarr/points/transcripts/")
-    nucs_folder = os.path.join(tma_folder, "spatialdata.zarr/shapes/nucleus_boundaries")
-    cell_folder = os.path.join(tma_folder, "spatialdata.zarr/shapes/cell_boundaries")
-
-    os.makedirs(tx_folder, exist_ok=True)
-    os.makedirs(nucs_folder, exist_ok=True)
-    os.makedirs(cell_folder, exist_ok=True)
-
-    points_fname = os.path.join(tx_folder, "points.parquet")
-    nucs_fname = os.path.join(nucs_folder, "shapes.parquet")
-    cell_fname = os.path.join(cell_folder, "shapes.parquet")
-
-    ndf = pd.read_csv(os.path.join(xenium_folder, "segmentation_mask/nucleus_boundaries.csv"))
-    nuc_df = compute_polygons(ndf)
-    nuc_df.to_parquet(nucs_fname)
-
-    cdf = pd.read_csv(os.path.join(xenium_folder, "segmentation_mask/cell_boundaries.csv"))
-    cell_df = compute_polygons(cdf)
-    cell_df.to_parquet(cell_fname)
-
-    tx_df = pl.scan_parquet(os.path.join(xenium_folder, "transcripts/transcripts.parquet"))
-    tx_df = tx_df.rename({"x_location": "x", "y_location": "y", "z_location": "z"})
-    tx_df.sink_parquet(points_fname)
-
-    # build a gene panel
-    features = tx_df.unique(subset=["feature_name", "codeword_category", "is_gene"]).collect().to_pandas().sort_values(by=['is_gene','feature_name'])
-    new_gene_panel_targets = []
-    for fname, codeword in zip(features['feature_name'], features['codeword_category']):
-        if codeword=='predesigned_gene':
-            new_gene_panel_targets.append({'type': {'data': {'name':fname}, 'descriptor':'gene'}})
-        else:
-            new_gene_panel_targets.append({'type': {'data': {'name':fname}, 'descriptor':codeword}})
-    gene_panel = {'payload':{'targets':new_gene_panel_targets}}
-
-    with open(os.path.join(tma_folder, "gene_panel.json"), 'w') as io:
-        json.dump(gene_panel, io)
-
-    # No cell types
-    n_nucs = nuc_df.shape[0]
-    ctype_df = pd.DataFrame({"cell_type_assignment":["Unknown"]*n_nucs}, index=nuc_df.index.values)
-    ctype_df.to_parquet(os.path.join(tma_folder, "modulator_celltype_assignments.parquet"))
-
-    # write out the bounding box
-    tma_shapes_fname = os.path.join(tma_folder, "tma_shapes.parquet")
-    minx,miny,_,_ = nuc_df.bounds.min()
-    _,_,maxx,maxy = nuc_df.bounds.max()
-    bbox = shapely.box(minx-50,miny-50,maxx+50,maxy+50)
-    tma_shapes = gpd.GeoDataFrame({"Donor Block ID":[1]}, geometry=[bbox])
-    tma_shapes.to_parquet(tma_shapes_fname)
-
-    tma = process_tma(tma_folder=tma_folder, tma_shapes_fname=tma_shapes_fname)
-    tma.save(os.path.join(tma_folder, "tma.npz"))
+    tma = process_zarr(
+        zarr_dir=args.zarr_dir,
+        max_dist=args.max_dist,
+        n_bins=args.n_bins,
+        box_width=args.box_width)
+    tma.save(args.output)
+    print(f"Saved TMA to {args.output}")
