@@ -11,6 +11,7 @@ from scipy.sparse import coo_array, csr_array
 from scipy.spatial import KDTree
 from tqdm import tqdm
 
+from ebbf.compat import get_num_cpus
 from ebbf.data.datasets import ComboDataset, NuclearPatchDataset
 from ebbf.data.utils import approximate_ellipse
 
@@ -284,7 +285,7 @@ def _compute_histograms(
     n_rows = points_dataset.count_rows(filter=(ds.field("is_gene")))
 
     if num_workers is None:
-        num_workers = len(os.sched_getaffinity(0)) // 2
+        num_workers = get_num_cpus() // 2
 
     n_nucs = len(cell_id2idx)
     n_genes = len(gene2idx)
@@ -407,10 +408,13 @@ def process_zarr(
     max_dist: float = 40,
     n_bins: int = 100,
     box_width: float = 400,
-    nuc_density_per_um2: float = 1e-4,
+    nuc_density_per_um2: float = 1e-5,
 ):
     """
     Process a SpatialData zarr directory into a TMA object.
+
+    Creates a uniform grid of tiles over the slide area and keeps
+    any tile that meets the minimum nucleus density threshold.
 
     Args:
         zarr_dir: Path to a SpatialData zarr directory containing:
@@ -419,10 +423,10 @@ def process_zarr(
             - shapes/cell_boundaries/shapes.parquet (optional)
         max_dist: Maximum distance for histogram binning
         n_bins: Number of histogram bins
-        box_width: Width of spatial boxes for sampling
-        nuc_density_per_um2: Minimum nucleus density threshold for boxes
+        box_width: Width of spatial tiles
+        nuc_density_per_um2: Minimum nucleus density to keep a tile (default: 1e-5)
     """
-    num_workers = len(os.sched_getaffinity(0))
+    num_workers = get_num_cpus()
 
     # Determine paths - handle both directory and file parquet formats
     points_path = os.path.join(zarr_dir, "points/transcripts/points.parquet")
@@ -485,18 +489,18 @@ def process_zarr(
 
     nuc_gene_counts: csr_array = result["nuc_gene_counts"]
 
-    ## Compute boxes from nucleus bounding box
+    ## Compute uniform grid of tiles from nucleus bounding box
     min_x, min_y = c.min(axis=0)
     max_x, max_y = c.max(axis=0)
     boxes = _compute_boxes_from_bounds(min_x, min_y, max_x, max_y, box_width)
 
-    ## Filter out boxes that are too empty
-    nuc_count_thresh = nuc_density_per_um2 * (box_width**2)
+    ## Filter out sparse tiles based on nucleus density
+    nuc_count_thresh = max(1, nuc_density_per_um2 * (box_width**2))
     n_nucs_per_box = np.array(
         [
             np.count_nonzero(
-                (c[:, 0] > box[0])
-                & (c[:, 1] > box[1])
+                (c[:, 0] >= box[0])
+                & (c[:, 1] >= box[1])
                 & (c[:, 0] < box[2])
                 & (c[:, 1] < box[3])
             )
@@ -504,6 +508,10 @@ def process_zarr(
         ]
     )
     boxes = boxes[n_nucs_per_box >= nuc_count_thresh]
+    print(
+        f"Kept {len(boxes)} tiles with >= {nuc_count_thresh:.1f} nuclei "
+        f"(density={nuc_density_per_um2})"
+    )
 
     print("Estimating distance histograms per box")
 

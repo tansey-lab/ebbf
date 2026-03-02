@@ -40,8 +40,10 @@ workflow NFCORE_EBBF {
     EBBF (
         samplesheet
     )
+
     emit:
-    multiqc_report = EBBF.out.multiqc_report // channel: /path/to/multiqc_report.html
+    postprocess_results = EBBF.out.postprocess_results
+    multiqc_report      = EBBF.out.multiqc_report
 }
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

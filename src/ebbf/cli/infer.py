@@ -9,6 +9,7 @@ import pyarrow.dataset as ds
 import torch
 from omegaconf import OmegaConf
 
+from ebbf.compat import get_num_cpus
 from ebbf.data.datasets import TxPatchDataset
 from ebbf.data.tma import TMA
 from ebbf.inference.infer import FlowInference, infer
@@ -93,7 +94,7 @@ def main():
     )
 
     # Run inference
-    n_processes = len(os.sched_getaffinity(0))
+    n_processes = get_num_cpus()
     df = infer(
         dataset=dataset,
         flow_inference=flow_inference,

@@ -16,6 +16,7 @@ from scipy.spatial import KDTree
 from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 
+from ebbf.compat import get_num_cpus
 from ebbf.data.tma import TMA
 
 
@@ -406,7 +407,7 @@ def post_process(
 
     ## Get number of parallel workers
     if n_workers is None:
-        n_workers = len(os.sched_getaffinity(0))
+        n_workers = get_num_cpus()
 
     ## Get mappings for genes
     idx2genes = {i: x for i, x in enumerate(tma.genes)}

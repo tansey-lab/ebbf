@@ -7,7 +7,7 @@ import torch
 import torch.multiprocessing as mp
 from omegaconf import OmegaConf
 
-from ebbf.train_parallel import main as train_main
+from ebbf.train_parallel import main_distributed, main_single
 
 
 def main():
@@ -27,4 +27,9 @@ def main():
         config = OmegaConf.merge(uconfig, config)
 
     world_size = torch.cuda.device_count()
-    mp.spawn(train_main, args=(world_size, config), nprocs=world_size)
+    if world_size > 0:
+        print(f"Found {world_size} CUDA device(s), using distributed training...")
+        mp.spawn(main_distributed, args=(world_size, config), nprocs=world_size)
+    else:
+        print("No CUDA devices found, running on CPU...")
+        main_single(config, torch.device("cpu"))

@@ -3,11 +3,15 @@
     IMPORT MODULES / SUBWORKFLOWS / FUNCTIONS
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 */
-include { MULTIQC                } from '../modules/nf-core/multiqc/main'
-include { paramsSummaryMap       } from 'plugin/nf-schema'
-include { paramsSummaryMultiqc   } from '../subworkflows/nf-core/utils_nfcore_pipeline'
-include { softwareVersionsToYAML } from '../subworkflows/nf-core/utils_nfcore_pipeline'
-include { methodsDescriptionText } from '../subworkflows/local/utils_nfcore_ebbf_pipeline'
+include { EBBF_PREPROCESS           } from '../modules/local/preprocess'
+include { EBBF_TRAIN                } from '../modules/local/train'
+include { EBBF_INFER                } from '../modules/local/infer'
+include { EBBF_POSTPROCESS          } from '../modules/local/postprocess'
+include { MULTIQC                   } from '../modules/nf-core/multiqc/main'
+include { paramsSummaryMap          } from 'plugin/nf-schema'
+include { paramsSummaryMultiqc      } from '../subworkflows/nf-core/utils_nfcore_pipeline'
+include { softwareVersionsToYAML    } from '../subworkflows/nf-core/utils_nfcore_pipeline'
+include { methodsDescriptionText    } from '../subworkflows/local/utils_nfcore_ebbf_pipeline'
 
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -18,11 +22,61 @@ include { methodsDescriptionText } from '../subworkflows/local/utils_nfcore_ebbf
 workflow EBBF {
 
     take:
-    ch_samplesheet // channel: samplesheet read in from --input
+    ch_samplesheet // channel: [ meta, zarr_dir ]
+
     main:
 
     ch_versions = channel.empty()
     ch_multiqc_files = channel.empty()
+
+    //
+    // STEP 1: Preprocess - Convert zarr to TMA format
+    //
+    EBBF_PREPROCESS(ch_samplesheet)
+    ch_versions = ch_versions.mix(EBBF_PREPROCESS.out.versions.first())
+
+    //
+    // STEP 2: Train - Train the model using TMA (config from params)
+    //
+    EBBF_TRAIN(EBBF_PREPROCESS.out.tma)
+    ch_versions = ch_versions.mix(EBBF_TRAIN.out.versions.first())
+
+    //
+    // STEP 3: Infer - Run inference with the trained model
+    // Transcripts are derived from zarr_dir: points/transcripts/
+    // Generate worker channels for parallel inference
+    //
+    ch_infer_input = EBBF_TRAIN.out.model
+        .join(ch_samplesheet)
+        .map { meta, model_dir, zarr_dir ->
+            def transcripts = file("${zarr_dir}/points/transcripts")
+            [ meta, model_dir, transcripts ]
+        }
+        .combine(Channel.of(0..<params.n_infer_workers))
+        .map { meta, model_dir, transcripts, worker_id ->
+            [ meta, model_dir, transcripts, params.n_infer_workers, worker_id ]
+        }
+
+    EBBF_INFER(ch_infer_input)
+    ch_versions = ch_versions.mix(EBBF_INFER.out.versions.first())
+
+    //
+    // STEP 4: Postprocess - Aggregate inference results
+    // Wait for all inference workers to complete before postprocessing
+    //
+    ch_postprocess_input = EBBF_INFER.out.results
+        .groupTuple()
+        .map { meta, parquet_list ->
+            [ meta, parquet_list.flatten() ]
+        }
+        .join(EBBF_TRAIN.out.model)
+        .join(EBBF_PREPROCESS.out.tma)
+        .map { meta, parquet_files, model_dir, tma_file ->
+            [ meta, parquet_files, model_dir, tma_file ]
+        }
+
+    EBBF_POSTPROCESS(ch_postprocess_input)
+    ch_versions = ch_versions.mix(EBBF_POSTPROCESS.out.versions.first())
 
     //
     // Collate and save software versions
@@ -94,8 +148,10 @@ workflow EBBF {
         []
     )
 
-    emit:multiqc_report = MULTIQC.out.report.toList() // channel: /path/to/multiqc_report.html
-    versions       = ch_versions                 // channel: [ path(versions.yml) ]
+    emit:
+    postprocess_results = EBBF_POSTPROCESS.out.results
+    multiqc_report      = MULTIQC.out.report.toList()
+    versions            = ch_versions
 
 }
 

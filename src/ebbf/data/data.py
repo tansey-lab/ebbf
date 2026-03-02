@@ -1,7 +1,6 @@
 import geopandas as gpd
 import numpy as np
 import torch
-from ebbf.data.sim_sampling import SimTranscriptSampler
 from omegaconf import OmegaConf
 from scipy.sparse import load_npz
 from torch.utils.data import DataLoader
@@ -186,6 +185,8 @@ def instantiate_transcript_sampler(
             device=device,
         )
     else:
+        from ebbf.data.sim_sampling import SimTranscriptSampler
+
         tx_sampler = SimTranscriptSampler(config=config, device=device)
 
     return tx_sampler
