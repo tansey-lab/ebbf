@@ -11,6 +11,7 @@ from torch.distributed import destroy_process_group, init_process_group
 from torch.distributions.beta import Beta
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from ebbf.data.data import instantiate_train_dataloader, instantiate_transcript_sampler
 from ebbf.data.patch import NuclearBatch
@@ -67,7 +68,12 @@ class Trainer:
         else:
             self.model = model
 
+        logger.info("Instantiating transcript sampler...")
         self.tx_sampler = instantiate_transcript_sampler(config, device=device)
+        logger.info(
+            f"Transcript sampler ready (max_tx={config.data.max_tx}, "
+            f"sample_mode={config.data.sample_mode})"
+        )
         self.time_distribution = Beta(
             torch.tensor(1.0, device=device).float(),
             torch.tensor(config.train.time_skew, device=device).float(),
@@ -189,12 +195,27 @@ class Trainer:
             self.train_dataloader.sampler.set_epoch(epoch)
         epoch_loss = 0.0
         n_batches = len(self.train_dataloader)
-        for step, batch in enumerate(self.train_dataloader):
+
+        # Use tqdm for progress tracking on main process
+        if self.is_main_process:
+            pbar = tqdm(
+                enumerate(self.train_dataloader),
+                total=n_batches,
+                desc=f"Epoch {epoch}",
+                leave=False,
+            )
+        else:
+            pbar = enumerate(self.train_dataloader)
+
+        for step, batch in pbar:
             loss = self._run_batch(batch, step, epoch)
             if self.is_main_process:
                 if self.wandb_enabled:
                     self.run.log({"Train loss (step)": loss})
                 epoch_loss += loss / n_batches
+                if hasattr(pbar, "set_postfix"):
+                    pbar.set_postfix(loss=f"{loss:.4f}")
+
         if self.is_main_process:
             if self.wandb_enabled:
                 self.run.log({"Train loss (epoch)": epoch_loss, "Epoch": epoch})
@@ -208,6 +229,13 @@ class Trainer:
         torch.save(to_save, os.path.join(self.output_dir, "chkpoint.pt"))
 
     def train(self):
+        if self.is_main_process:
+            logger.info(
+                f"Starting training: {self.n_epochs} epochs, "
+                f"{len(self.train_dataloader)} batches/epoch"
+            )
+            logger.info("Waiting for first batch from DataLoader workers...")
+
         for epoch in range(self.n_epochs):
             self._run_epoch(epoch)
             if self.is_main_process and (epoch % self.save_freq == 0):
@@ -220,8 +248,13 @@ class Trainer:
 def main_distributed(rank: int, world_size: int, config: OmegaConf):
     """Distributed training entry point (multi-GPU)."""
     ddp_setup(rank, world_size)
+    num_workers = config.train.num_workers if "num_workers" in config.train else 4
     dataloader = instantiate_train_dataloader(
-        config, distributed=True, num_workers=4, world_size=world_size, rank=rank
+        config,
+        distributed=True,
+        num_workers=num_workers,
+        world_size=world_size,
+        rank=rank,
     )
 
     model = instantiate_model(config)
@@ -249,11 +282,19 @@ def main_single(config: OmegaConf, device: torch.device):
     """Single-process training entry point (CPU or single GPU)."""
     from ebbf.compat import get_num_cpus
 
-    num_workers = min(4, get_num_cpus())
+    if "num_workers" in config.train:
+        num_workers = config.train.num_workers
+    else:
+        num_workers = min(4, get_num_cpus())
 
+    logger.info(
+        f"Initializing DataLoader with {num_workers} workers, "
+        f"max_tx={config.data.max_tx}, dataset_size={config.data.dataset_size}"
+    )
     dataloader = instantiate_train_dataloader(
         config, distributed=False, num_workers=num_workers
     )
+    logger.info("DataLoader initialized, workers starting to prefetch batches...")
 
     model = instantiate_model(config)
 

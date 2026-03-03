@@ -341,7 +341,7 @@ class TxFlowUNet(nn.Module):
             x = torch.concat((x, nuc_x), dim=1)
 
         ## Pass through unet (B x out_channels x K x K)
-        x = self.unet(x, t, None)
+        x = self.unet(x, t)
 
         ## Extract relevant per-transcript vectors
         x = self.tx_grid_decoder(x, xy=xy, items=gene_idx, seqlens=tx_seqlens)

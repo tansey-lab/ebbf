@@ -1,3 +1,4 @@
+import logging
 import math
 from collections.abc import Iterator
 from copy import deepcopy
@@ -11,6 +12,8 @@ from torch.utils.data import Dataset, IterableDataset
 
 from ebbf.data.patch import NuclearBatch
 from ebbf.data.utils import RTree, TensorSequence, TorchCSR
+
+logger = logging.getLogger(__name__)
 
 
 class NuclearPatchDataset(Dataset):
@@ -107,7 +110,14 @@ class NuclearPatchDataset(Dataset):
     def _sample_patch(self):
         ## Get subset of nuclei that are on this punch
         n_nuc = 0
+        n_tries = 0
         while n_nuc < self.min_nucs:
+            n_tries += 1
+            if n_tries % 100 == 0:
+                logger.warning(
+                    f"_sample_patch: {n_tries} tries to find patch with "
+                    f">={self.min_nucs} nuclei (found {n_nuc})"
+                )
             punch_idx: int = torch.randint(self.n_punches, size=()).item()
 
             ## Sample the center of the patch
