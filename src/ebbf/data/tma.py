@@ -1,4 +1,5 @@
 import concurrent.futures as cf
+import logging
 import os
 from itertools import product
 
@@ -14,6 +15,8 @@ from tqdm import tqdm
 from ebbf.compat import get_num_cpus
 from ebbf.data.datasets import ComboDataset, NuclearPatchDataset
 from ebbf.data.utils import approximate_ellipse
+
+logger = logging.getLogger(__name__)
 
 
 class EllipseLookup:
@@ -229,7 +232,7 @@ def process_batch(batch):
     mask = nuc_genes != "None"
 
     if not np.any(mask):
-        print("EMPTY")
+        logger.debug("EMPTY")
 
     nuclear_tx_gene_idx = np.vectorize(_gene2idx.get)(nuc_genes[mask])
     nuclear_tx_nuc_idx = np.vectorize(_cell_id2idx.get)(nuc_cell_ids[mask])
@@ -455,7 +458,7 @@ def process_zarr(
 
     ## Read cell shapes (optional)
     if os.path.isfile(cells_fname):
-        print("Computing cell polygons")
+        logger.info("Computing cell polygons")
         cells = gpd.read_parquet(cells_fname)
         polygons = shapely.make_valid(cells.loc[nuc_cell_id]["geometry"].values)
         cell_triangle_xy, cell_triangle_probs = _compute_polygon_triangulation(polygons)
@@ -475,7 +478,7 @@ def process_zarr(
         if cid in cell_id2idx:
             nuc_cell_counts[cell_id2idx[cid]] = count
 
-    print("Computing histograms/count matrices")
+    logger.info("Computing histograms/count matrices")
     result = _compute_histograms(
         points_dataset,
         S,
@@ -508,12 +511,14 @@ def process_zarr(
         ]
     )
     boxes = boxes[n_nucs_per_box >= nuc_count_thresh]
-    print(
-        f"Kept {len(boxes)} tiles with >= {nuc_count_thresh:.1f} nuclei "
-        f"(density={nuc_density_per_um2})"
+    logger.info(
+        "Kept %d tiles with >= %.1f nuclei (density=%s)",
+        len(boxes),
+        nuc_count_thresh,
+        nuc_density_per_um2,
     )
 
-    print("Estimating distance histograms per box")
+    logger.info("Estimating distance histograms per box")
 
     ## Centroid histograms
     centroid_hist_array = _estimate_per_box_distance_histograms(

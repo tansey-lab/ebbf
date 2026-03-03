@@ -1,6 +1,9 @@
 import argparse
+import logging
 
 from ebbf.data.tma import process_zarr
+
+logger = logging.getLogger(__name__)
 
 
 def main():
@@ -40,4 +43,4 @@ def main():
         box_width=args.box_width,
     )
     tma.save(args.output)
-    print(f"Saved TMA to {args.output}")
+    logger.info("Saved TMA to %s", args.output)

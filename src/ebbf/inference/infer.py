@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 
@@ -17,6 +18,8 @@ from ebbf.data.datasets import TxPatchDataset, tx_patch_collate_fn
 from ebbf.data.tma import TMA
 from ebbf.data.utils import ellipse_grid_indices
 from ebbf.model.model import instantiate_model
+
+logger = logging.getLogger(__name__)
 
 
 class FlowInference:
@@ -188,7 +191,7 @@ if __name__ == "__main__":
 
     ## Check to see if filename already exists. Exit if we are not overwriting
     if os.path.isfile(filename) and (not overwrite):
-        print("File exists and we are not overwriting. Exiting now...", file=sys.stderr)
+        logger.warning("File exists and we are not overwriting. Exiting now...")
         sys.exit(0)
 
     config = OmegaConf.load(os.path.join(model_directory, "config.yaml"))

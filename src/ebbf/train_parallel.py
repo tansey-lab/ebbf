@@ -1,3 +1,4 @@
+import logging
 import os
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -14,6 +15,8 @@ from torch.utils.data import DataLoader
 from ebbf.data.data import instantiate_train_dataloader, instantiate_transcript_sampler
 from ebbf.data.patch import NuclearBatch
 from ebbf.model.model import instantiate_model
+
+logger = logging.getLogger(__name__)
 
 
 def ddp_setup(rank, world_size):
@@ -292,5 +295,5 @@ if __name__ == "__main__":
     if world_size > 0:
         mp.spawn(main_distributed, args=(world_size, config), nprocs=world_size)
     else:
-        print("No CUDA devices found, running on CPU...")
+        logger.info("No CUDA devices found, running on CPU...")
         main_single(config, torch.device("cpu"))

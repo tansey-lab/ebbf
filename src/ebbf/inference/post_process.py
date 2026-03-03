@@ -1,8 +1,8 @@
 import argparse
+import logging
 import multiprocessing as mp
 import os
 import shutil
-import sys
 import uuid
 
 import numpy as np
@@ -18,6 +18,8 @@ from tqdm import tqdm
 
 from ebbf.compat import get_num_cpus
 from ebbf.data.tma import TMA
+
+logger = logging.getLogger(__name__)
 
 
 def remove(path):
@@ -413,7 +415,7 @@ def post_process(
     idx2genes = {i: x for i, x in enumerate(tma.genes)}
 
     ## Step 1: Make tx unique
-    print("Step 1: getting unique tx...", file=sys.stderr)
+    logger.info("Step 1: getting unique tx...")
     input_path = os.path.join(directory, input_fname)
     temp_fname1 = "temp1-" + uuid.uuid4().hex + ".parquet"
     temp_path1 = os.path.join(directory, temp_fname1)
@@ -422,7 +424,7 @@ def post_process(
     )
 
     ## Step 2: Build double grid
-    print("Step 2: building double grid...", file=sys.stderr)
+    logger.info("Step 2: building double grid...")
     temp_fname2 = "temp2-" + uuid.uuid4().hex
     temp_path2 = os.path.join(directory, temp_fname2)
     double_grid_and_group(
@@ -433,7 +435,7 @@ def post_process(
     remove(temp_path1)
 
     ## Step 3: Cluster within each grid section
-    print("Step 3: clustering within grid sections...", file=sys.stderr)
+    logger.info("Step 3: clustering within grid sections...")
     temp_fname3 = "temp3-" + uuid.uuid4().hex
     temp_path3 = os.path.join(directory, temp_fname3)
     grid_level_cluster(
@@ -447,7 +449,7 @@ def post_process(
     remove(temp_path2)
 
     ## Step 4: Link clusters across grid versions
-    print("Step 4: linking clusters across grids...", file=sys.stderr)
+    logger.info("Step 4: linking clusters across grids...")
     temp_fname4 = "temp4-" + uuid.uuid4().hex + ".parquet"
     temp_path4 = os.path.join(directory, temp_fname4)
     grid_connected_components(input_path=temp_path3, output_path=temp_path4)
@@ -456,7 +458,7 @@ def post_process(
     remove(temp_path3)
 
     ## Step 5: Map clusters to cells
-    print("Step 5: mapping clusters to cells...", file=sys.stderr)
+    logger.info("Step 5: mapping clusters to cells...")
     output_path = os.path.join(directory, output_fname)
     map_clusters_to_cells(
         input_path=temp_path4,
@@ -469,7 +471,7 @@ def post_process(
     ## Remove fourth intermediate file
     remove(temp_path4)
 
-    print("DONE!", file=sys.stderr)
+    logger.info("DONE!")
 
     return "Success!"
 

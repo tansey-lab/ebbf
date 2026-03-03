@@ -1,4 +1,5 @@
 import argparse
+import logging
 import os
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -8,6 +9,8 @@ import torch.multiprocessing as mp
 from omegaconf import OmegaConf
 
 from ebbf.train_parallel import main_distributed, main_single
+
+logger = logging.getLogger(__name__)
 
 
 def main():
@@ -28,8 +31,10 @@ def main():
 
     world_size = torch.cuda.device_count()
     if world_size > 0:
-        print(f"Found {world_size} CUDA device(s), using distributed training...")
+        logger.info(
+            "Found %d CUDA device(s), using distributed training...", world_size
+        )
         mp.spawn(main_distributed, args=(world_size, config), nprocs=world_size)
     else:
-        print("No CUDA devices found, running on CPU...")
+        logger.info("No CUDA devices found, running on CPU...")
         main_single(config, torch.device("cpu"))
