@@ -74,6 +74,7 @@ train:
   n_epochs: ${params.n_epochs}
   grad_accum_steps: ${params.grad_accum_steps}
   time_skew: ${params.time_skew}
+  wandb_enabled: ${params.wandb_enabled}
 
 output_folder: model_output
 

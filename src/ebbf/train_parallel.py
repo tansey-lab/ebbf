@@ -81,14 +81,16 @@ class Trainer:
         self.use_ema: bool = config.train.use_ema
         self.ema_warmup_epochs: int = config.train.ema_warmup_epochs
         self.save_freq: int = config.train.save_freq
+        self.wandb_enabled: bool = config.train.get("wandb_enabled", True)
 
         if is_main_process:
-            wandb.login()
-            self.run = wandb.init(
-                project="Transcript diffusion",
-                config=OmegaConf.to_container(config, resolve=True),
-                mode="offline" if not torch.cuda.is_available() else "online",
-            )
+            if self.wandb_enabled:
+                wandb.login()
+                self.run = wandb.init(
+                    project="Transcript diffusion",
+                    config=OmegaConf.to_container(config, resolve=True),
+                    mode="offline" if not torch.cuda.is_available() else "online",
+                )
 
             self.output_dir = config.output_folder
             os.makedirs(self.output_dir, exist_ok=True)
@@ -190,10 +192,12 @@ class Trainer:
         for step, batch in enumerate(self.train_dataloader):
             loss = self._run_batch(batch, step, epoch)
             if self.is_main_process:
-                self.run.log({"Train loss (step)": loss})
+                if self.wandb_enabled:
+                    self.run.log({"Train loss (step)": loss})
                 epoch_loss += loss / n_batches
         if self.is_main_process:
-            self.run.log({"Train loss (epoch)": epoch_loss, "Epoch": epoch})
+            if self.wandb_enabled:
+                self.run.log({"Train loss (epoch)": epoch_loss, "Epoch": epoch})
 
     def _save_checkpoint(self, epoch):
         to_save = {
