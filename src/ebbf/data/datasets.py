@@ -51,7 +51,11 @@ class NuclearPatchDataset(Dataset):
             if nuc2ellipse_mat is not None
             else None
         )
-        self.rtree = RTree(nuc2xy)
+        # Store raw numpy array for lazy RTree initialization
+        # (RTree uses C extension that doesn't survive fork())
+        self._nuc2xy_numpy = nuc2xy
+        self._rtree = None
+        self._rtree_pid = None  # Track which process created the RTree
         self.nuc2cell_count = torch.from_numpy(nuc2cell_count).float()
 
         if cell_triangle_num is None:
@@ -67,6 +71,22 @@ class NuclearPatchDataset(Dataset):
         self.patch_padding = patch_padding
         self.min_nucs = min_nucs
         self.dataset_size = dataset_size
+
+    @property
+    def rtree(self):
+        """Lazy initialization of RTree to handle fork() correctly.
+
+        The rtree library uses C extensions that don't survive fork().
+        By checking the process ID, we ensure each forked process creates
+        its own RTree instance.
+        """
+        import os
+
+        current_pid = os.getpid()
+        if self._rtree is None or self._rtree_pid != current_pid:
+            self._rtree = RTree(self._nuc2xy_numpy)
+            self._rtree_pid = current_pid
+        return self._rtree
 
     def __len__(self):
         n = self.dataset_size
@@ -113,7 +133,7 @@ class NuclearPatchDataset(Dataset):
         n_tries = 0
         while n_nuc < self.min_nucs:
             n_tries += 1
-            if n_tries % 100 == 0:
+            if n_tries % 10000 == 0:
                 logger.warning(
                     f"_sample_patch: {n_tries} tries to find patch with "
                     f">={self.min_nucs} nuclei (found {n_nuc})"
