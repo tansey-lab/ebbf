@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Run EBBF pipeline on Xenium_Prime_Mouse_Ileum test dataset
+# Run EBBF pipeline integration test on Xenium_Prime_Mouse_Ileum dataset
 # Usage: ./scripts/run_mouse_ileum.sh [zarr_path]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,14 +27,14 @@ echo "Created samplesheet: $SAMPLESHEET"
 echo "Using zarr: $ZARR_PATH"
 echo "Output directory: $OUTDIR"
 
-# Run Nextflow pipeline locally
+# Run Nextflow pipeline with test profile (minimal training: 1 epoch, 100 samples)
 cd "${PROJECT_DIR}/nextflow"
 
 nextflow run main.nf \
+    -profile test \
     --input "$SAMPLESHEET" \
     --outdir "$OUTDIR" \
     --experiment_name mouse_ileum \
-    --n_infer_workers 4 \
     -work-dir "$WORKDIR" \
     -resume
 
