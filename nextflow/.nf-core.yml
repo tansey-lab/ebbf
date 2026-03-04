@@ -1,0 +1,21 @@
+repository_type: pipeline
+
+nf_core_version: 3.5.2
+
+lint:
+  files_exist:
+    - conf/igenomes.config
+    - conf/igenomes_ignored.config
+
+template:
+  org: nf-core
+  name: ebbf
+  description: Single molecule spatial segmentation.
+  author: Christopher Tosh
+  version: 1.0.0dev
+  force: true
+  outdir: ./nextflow
+  skip_features:
+    - igenomes
+    - fastqc
+  is_nfcore: true
