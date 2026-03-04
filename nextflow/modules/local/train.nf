@@ -85,13 +85,14 @@ infer:
   model_checkpoint: null
   atol: 1.0e-5
   rtol: 1.0e-5
+  device: ${params.infer_device}
 EOFCONFIG
 
     ebbf-train --config train_config.yaml
 
     cat <<-END_VERSIONS > versions.yml
-    "${task.process}":
-        ebbf: \$(python -c "import ebbf; print(ebbf.__version__)" 2>/dev/null || echo "1.0.0")
-    END_VERSIONS
+"${task.process}":
+    ebbf: \$(python -c "import ebbf; print(ebbf.__version__)" 2>/dev/null || echo "1.0.0")
+END_VERSIONS
     """
 }

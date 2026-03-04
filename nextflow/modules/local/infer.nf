@@ -4,7 +4,7 @@ process EBBF_INFER {
     label 'process_gpu'
 
     input:
-    tuple val(meta), path(model_dir), path(transcripts), val(n_workers), val(worker_id)
+    tuple val(meta), path(model_dir), path(tma), path(zarr_dir), val(n_workers), val(worker_id)
 
     output:
     tuple val(meta), path("part-*.parquet"), emit: results
@@ -14,22 +14,18 @@ process EBBF_INFER {
     def args = task.ext.args ?: ''
     def prefix = task.ext.prefix ?: "${meta.id}"
     """
-    # Copy model directory to make it writable
-    cp -rL ${model_dir} model_work
-
     ebbf-infer \\
-        --model_directory model_work \\
-        --transcripts_fname ${transcripts} \\
+        --model_directory ${model_dir} \\
+        --tma_fname ${tma} \\
+        --zarr_dir ${zarr_dir} \\
         --n_workers ${n_workers} \\
         --worker_id ${worker_id} \\
+        --output_dir . \\
         ${args}
 
-    # Move output parquet to working directory
-    mv model_work/tx/*.parquet .
-
     cat <<-END_VERSIONS > versions.yml
-    "${task.process}":
-        ebbf: \$(python -c "import ebbf; print(ebbf.__version__)" 2>/dev/null || echo "1.0.0")
-    END_VERSIONS
+"${task.process}":
+    ebbf: \$(python -c "import ebbf; print(ebbf.__version__)" 2>/dev/null || echo "1.0.0")
+END_VERSIONS
     """
 }

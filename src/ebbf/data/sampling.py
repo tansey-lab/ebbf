@@ -267,7 +267,7 @@ class TranscriptSampler:
 
         n_tx = ctype.shape[0]
         device = ctype.device
-        tx_offset = torch.empty(n_tx, 2, dtype=torch.float32, device=device)
+        tx_offset = torch.empty(n_tx, 2, device=device)
 
         ## With some probability, we generate tx within the nucleus
         within_nuc_prob = 1.0 / self.correction_factor[punch_idx]

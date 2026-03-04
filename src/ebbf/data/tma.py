@@ -13,7 +13,7 @@ from scipy.spatial import KDTree
 from tqdm import tqdm
 
 from ebbf.compat import get_num_cpus
-from ebbf.data.datasets import ComboDataset, NuclearPatchDataset
+from ebbf.data.datasets import NuclearPatchDataset
 from ebbf.data.utils import approximate_ellipse
 
 logger = logging.getLogger(__name__)
@@ -610,12 +610,26 @@ class TMA:
         self.__dict__.update(kwargs)
 
     def save(self, fname: str):
-        np.savez_compressed(fname, **self.__dict__)
+        # Convert float64 arrays to float32 before saving
+        data = {}
+        for key, val in self.__dict__.items():
+            if isinstance(val, np.ndarray) and val.dtype == np.float64:
+                data[key] = val.astype(np.float32)
+            else:
+                data[key] = val
+        np.savez_compressed(fname, **data)
 
     @classmethod
     def load(cls, fname: str):
         res = np.load(fname, allow_pickle=True)
-        tma = cls(**res)
+        # Convert float64 arrays to float32 for MPS compatibility
+        converted = {}
+        for key, val in res.items():
+            if isinstance(val, np.ndarray) and val.dtype == np.float64:
+                converted[key] = val.astype(np.float32)
+            else:
+                converted[key] = val
+        tma = cls(**converted)
         tma.max_dist = res["max_dist"].item()
         return tma
 
@@ -662,32 +676,4 @@ class TMA:
                 else None
             ),
         )
-        return dataset
-
-    def get_combo_dataset(
-        self,
-        tx_data_fname: str,
-        patch_size: float,
-        patch_padding: float,
-        dataset_size: int,
-        min_nucs: int,
-        include_all_nucs_from_patch: bool,
-        max_tx: int | None = None,
-    ):
-
-        dataset = ComboDataset(
-            tx_data_fname=tx_data_fname,
-            nuc2xy=self.nuc_xy,  ## n_nucs x 2
-            nuc2ctype=self.nuc_ctype_idx,  ## n_nucs
-            genes=self.genes,
-            box_bounds=self.boxes,  ## n_punches x 4 (minx, miny, maxx, maxy)
-            patch_size=patch_size,
-            patch_padding=patch_padding,
-            dataset_size=dataset_size,
-            include_all_nucs_from_patch=include_all_nucs_from_patch,
-            min_nucs=min_nucs,
-            max_tx=max_tx,
-            nuc2ellipse_mat=self.nuc_ellipse_mat,
-        )
-
         return dataset

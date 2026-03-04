@@ -3,39 +3,27 @@ process EBBF_POSTPROCESS {
     label 'process_medium'
 
     input:
-    tuple val(meta), path(parquet_files), path(model_dir), path(tma_file)
+    tuple val(meta), path(parquet_files), path(tma_file)
 
     output:
-    tuple val(meta), path("results"), emit: results
-    path "versions.yml"             , emit: versions
+    tuple val(meta), path("*.parquet"), emit: results
+    path "versions.yml"               , emit: versions
 
     script:
     def args = task.ext.args ?: ''
     def prefix = task.ext.prefix ?: "${meta.id}"
     """
-    # Copy model directory to make it writable
-    cp -rL ${model_dir} model_work
-
-    # Create tx directory and move parquet files
-    mkdir -p model_work/tx
-    cp ${parquet_files} model_work/tx/
-
-    # Create tma directory with tma.npz
-    mkdir -p tma_work
-    cp ${tma_file} tma_work/tma.npz
-
     ebbf-postprocess \\
-        --model_directory model_work \\
-        --tma_directory tma_work \\
+        ${parquet_files} \\
+        --tma ${tma_file} \\
         --cluster_distance ${params.cluster_distance} \\
+        --output ${prefix}.parquet \\
+        --work_dir . \\
         ${args}
 
-    # Move results to output
-    mv model_work/results .
-
     cat <<-END_VERSIONS > versions.yml
-    "${task.process}":
-        ebbf: \$(python -c "import ebbf; print(ebbf.__version__)" 2>/dev/null || echo "1.0.0")
-    END_VERSIONS
+"${task.process}":
+    ebbf: \$(python -c "import ebbf; print(ebbf.__version__)" 2>/dev/null || echo "1.0.0")
+END_VERSIONS
     """
 }

@@ -61,3 +61,4 @@ infer:
   model_checkpoint: null
   atol: 1e-5
   rtol: 1e-5
+  device: auto # device for inference (auto, cuda, or cpu)

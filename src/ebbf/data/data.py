@@ -8,7 +8,6 @@ from torch.utils.data.distributed import DistributedSampler
 
 from ebbf.data.datasets import (
     NuclearPatchDataset,
-    combo_collate_fn,
     nuclear_patch_collate_fn,
 )
 from ebbf.data.sampling import NoSimTranscriptSampler, TranscriptSampler
@@ -68,25 +67,13 @@ def instantiate_train_dataloader(
     config.n_genes = tma.genes.shape[0]
     config.n_ctypes = 1
 
-    if config.data.sampler == "no-simulation":
-        dataset = tma.get_combo_dataset(
-            tx_data_fname=config.data.tx_data_fname,
-            patch_size=config.data.patch_size,
-            patch_padding=config.data.patch_padding,
-            dataset_size=int(config.data.dataset_size),
-            min_nucs=int(config.data.min_nucs),
-            include_all_nucs_from_patch=config.data.include_all_nucs_from_patch,
-            max_tx=config.data.max_tx,
-        )
-        collate_fn = combo_collate_fn
-    else:
-        dataset = tma.get_nuc_dataset(
-            patch_size=config.data.patch_size,
-            patch_padding=config.data.patch_padding,
-            dataset_size=int(config.data.dataset_size),
-            min_nucs=int(config.data.min_nucs),
-        )
-        collate_fn = nuclear_patch_collate_fn
+    dataset = tma.get_nuc_dataset(
+        patch_size=config.data.patch_size,
+        patch_padding=config.data.patch_padding,
+        dataset_size=int(config.data.dataset_size),
+        min_nucs=int(config.data.min_nucs),
+    )
+    collate_fn = nuclear_patch_collate_fn
 
     sampler = (
         DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=False)

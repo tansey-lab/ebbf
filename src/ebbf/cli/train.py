@@ -14,13 +14,25 @@ logger = logging.getLogger(__name__)
 
 
 def main():
+    torch.set_default_dtype(torch.float32)
+
     parser = argparse.ArgumentParser(description="Train EBB&Flow model")
     parser.add_argument(
         "--config", type=str, required=True, help="Path to config YAML file"
     )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=None,
+        help="Output directory (overrides config.output_folder)",
+    )
     args = parser.parse_args()
 
     config = OmegaConf.load(args.config)
+
+    # Override output_folder if provided via CLI
+    if args.output_dir is not None:
+        config.output_folder = args.output_dir
 
     if "prev_model_folder" in config:
         prev_model_folder = config.prev_model_folder

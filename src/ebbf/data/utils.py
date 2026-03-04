@@ -22,7 +22,7 @@ def get_dtype(nested_list):
     while isinstance(curr, list):
         curr = curr[0]
     if isinstance(curr, float):
-        return torch.float32
+        return torch.get_default_dtype()
     else:
         return torch.int64
 
@@ -89,7 +89,7 @@ class RTree:
                 )
                 result = {
                     "indices": torch.tensor(indices, dtype=torch.int64),
-                    "xy": torch.tensor(xy, dtype=torch.float32),
+                    "xy": torch.tensor(xy),
                 }
                 if objs[0] is not None:
                     objs_tuple = tuple(zip(*objs))
@@ -98,7 +98,7 @@ class RTree:
             except ValueError:
                 result = {
                     "indices": torch.empty(0, dtype=torch.int64),
-                    "xy": torch.empty(0, 2, dtype=torch.float32),
+                    "xy": torch.empty(0, 2),
                 }
             return result
 
@@ -139,12 +139,12 @@ class TxRTree:
         n_tx = len(xy)
         if n_tx == 0:
             tx_idx = torch.empty(0, dtype=torch.int64)
-            tx_xy = torch.empty(0, 2, dtype=torch.float32)
+            tx_xy = torch.empty(0, 2)
             tx_genes = torch.empty(0, dtype=torch.int64)
             tx_nuc_idx = torch.empty(0, dtype=torch.int64)
         else:
             tx_idx = torch.tensor(tidx, dtype=torch.int64)
-            tx_xy = torch.tensor(xy, dtype=torch.float32)
+            tx_xy = torch.tensor(xy)
             tx_genes = torch.tensor(gene, dtype=torch.int64)
             tx_nuc_idx = torch.tensor(nidx, dtype=torch.int64)
         return (tx_idx, tx_xy, tx_genes, tx_nuc_idx)

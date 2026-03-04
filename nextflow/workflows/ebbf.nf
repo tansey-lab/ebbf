@@ -47,14 +47,11 @@ workflow EBBF {
     // Generate worker channels for parallel inference
     //
     ch_infer_input = EBBF_TRAIN.out.model
+        .join(EBBF_PREPROCESS.out.tma)
         .join(ch_samplesheet)
-        .map { meta, model_dir, zarr_dir ->
-            def transcripts = file("${zarr_dir}/points/transcripts")
-            [ meta, model_dir, transcripts ]
-        }
         .combine(Channel.of(0..<params.n_infer_workers))
-        .map { meta, model_dir, transcripts, worker_id ->
-            [ meta, model_dir, transcripts, params.n_infer_workers, worker_id ]
+        .map { meta, model_dir, tma, zarr_dir, worker_id ->
+            [ meta, model_dir, tma, zarr_dir, params.n_infer_workers, worker_id ]
         }
 
     EBBF_INFER(ch_infer_input)
@@ -69,11 +66,7 @@ workflow EBBF {
         .map { meta, parquet_list ->
             [ meta, parquet_list.flatten() ]
         }
-        .join(EBBF_TRAIN.out.model)
         .join(EBBF_PREPROCESS.out.tma)
-        .map { meta, parquet_files, model_dir, tma_file ->
-            [ meta, parquet_files, model_dir, tma_file ]
-        }
 
     EBBF_POSTPROCESS(ch_postprocess_input)
     ch_versions = ch_versions.mix(EBBF_POSTPROCESS.out.versions.first())

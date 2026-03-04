@@ -33,9 +33,7 @@ class LayerNorm(nn.Module):
 def sinusoidal_embedding(x: torch.Tensor, dim: int, max_period: int = 10000):
     half = dim // 2
     freqs = torch.exp(
-        -math.log(max_period)
-        * torch.arange(start=0, end=half, dtype=torch.float32)
-        / half
+        -math.log(max_period) * torch.arange(start=0, end=half) / half
     ).to(device=x.device)
     args = x[:, None].float() * freqs[None]
     embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
@@ -198,7 +196,7 @@ class Conv2d(torch.nn.Module):
             if kernel and bias
             else None
         )
-        f = torch.as_tensor(resample_filter, dtype=torch.float32)
+        f = torch.as_tensor(resample_filter)
         f = f.ger(f).unsqueeze(0).unsqueeze(1) / f.sum().square()
         self.register_buffer("resample_filter", f if up or down else None)
 

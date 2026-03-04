@@ -13,7 +13,6 @@ from torch.utils.data import ChainDataset, DataLoader
 from torchdiffeq import odeint
 from tqdm import tqdm
 
-from ebbf.compat import get_num_cpus
 from ebbf.data.datasets import TxPatchDataset, tx_patch_collate_fn
 from ebbf.data.tma import TMA
 from ebbf.data.utils import ellipse_grid_indices
@@ -91,7 +90,12 @@ class FlowInference:
             )
 
             x = odeint(
-                ode_func, batch["tx_xy"], time_grid, atol=self.atol, rtol=self.rtol
+                ode_func,
+                batch["tx_xy"],
+                time_grid,
+                atol=self.atol,
+                rtol=self.rtol,
+                options={"dtype": torch.float32},
             )
 
             ## Scale back to the original coordinates
@@ -111,13 +115,12 @@ class FlowInference:
 def infer(
     dataset: TxPatchDataset | ChainDataset,
     flow_inference: FlowInference,
-    num_workers: int,
     batch_size: int,
 ):
 
     dataloader = DataLoader(
         dataset,
-        num_workers=num_workers,
+        num_workers=0,
         shuffle=False,
         batch_size=batch_size,
         collate_fn=tx_patch_collate_fn,
@@ -216,13 +219,24 @@ if __name__ == "__main__":
     )
 
     ## Load in the model
+    logger.info(f"Loading model from {os.path.join(model_directory, 'chkpoint.pt')}")
     state_dict = torch.load(
         os.path.join(model_directory, "chkpoint.pt"), map_location="cpu"
     )
     model = instantiate_model(config)
     model.train(False)
     model.load_state_dict(state_dict["model"])
-    device = torch.device("cuda")
+    device_str = config.infer.get("device", "auto")
+    if device_str == "auto":
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif torch.backends.mps.is_available():
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
+    else:
+        device = torch.device(device_str)
+    logger.info(f"Using device: {device}")
     flow_inference = FlowInference(
         patch_size=config.data.patch_size,
         patch_padding=config.data.patch_padding,
@@ -234,11 +248,9 @@ if __name__ == "__main__":
     )
 
     ## Run inference
-    n_processes = get_num_cpus()
     df = infer(
         dataset=dataset,
         flow_inference=flow_inference,
-        num_workers=n_processes,
         batch_size=config.train.batch_size,
     )
 

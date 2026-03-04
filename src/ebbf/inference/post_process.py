@@ -74,7 +74,9 @@ class DBSCANWorker(mp.Process):
 ###############
 ### STEP 1 ###
 ##############
-def filter_unique_and_remap_tx(input_path: str, output_path: str, idx2genes: dict):
+def filter_unique_and_remap_tx(
+    input_path: str | list[str], output_path: str, idx2genes: dict
+):
 
     df = pl.scan_parquet(input_path)
 
@@ -184,7 +186,7 @@ def double_grid_and_group(
 
     ## Concatenate grids and save, partitioning by grid version and label
     grid_df = pl.concat([grid_a_df, grid_b_df])
-    out_folder = pl.PartitionByKey(output_path, by=["grid_version", "super_grid_label"])
+    out_folder = pl.PartitionBy(output_path, key=["grid_version", "super_grid_label"])
     grid_df.sink_parquet(out_folder, mkdir=True)
     return "Success!"
 
@@ -393,40 +395,35 @@ def map_clusters_to_cells(
 
 
 def post_process(
-    directory: str,
+    input_files: list[str],
     tma: TMA,
     cluster_distance: float,
-    input_fname: str | None = None,
-    output_fname: str | None = None,
+    output_fname: str = "ef.parquet",
+    work_dir: str = ".",
     n_workers: int | None = None,
 ):
-
-    if input_fname is None:
-        input_fname = "tx"
-
-    if output_fname is None:
-        output_fname = "ef.parquet"
-
     ## Get number of parallel workers
     if n_workers is None:
         n_workers = get_num_cpus()
+
+    ## Ensure work_dir exists
+    os.makedirs(work_dir, exist_ok=True)
 
     ## Get mappings for genes
     idx2genes = {i: x for i, x in enumerate(tma.genes)}
 
     ## Step 1: Make tx unique
     logger.info("Step 1: getting unique tx...")
-    input_path = os.path.join(directory, input_fname)
     temp_fname1 = "temp1-" + uuid.uuid4().hex + ".parquet"
-    temp_path1 = os.path.join(directory, temp_fname1)
+    temp_path1 = os.path.join(work_dir, temp_fname1)
     filter_unique_and_remap_tx(
-        input_path=input_path, output_path=temp_path1, idx2genes=idx2genes
+        input_path=input_files, output_path=temp_path1, idx2genes=idx2genes
     )
 
     ## Step 2: Build double grid
     logger.info("Step 2: building double grid...")
     temp_fname2 = "temp2-" + uuid.uuid4().hex
-    temp_path2 = os.path.join(directory, temp_fname2)
+    temp_path2 = os.path.join(work_dir, temp_fname2)
     double_grid_and_group(
         input_path=temp_path1, output_path=temp_path2, cluster_distance=cluster_distance
     )
@@ -437,7 +434,7 @@ def post_process(
     ## Step 3: Cluster within each grid section
     logger.info("Step 3: clustering within grid sections...")
     temp_fname3 = "temp3-" + uuid.uuid4().hex
-    temp_path3 = os.path.join(directory, temp_fname3)
+    temp_path3 = os.path.join(work_dir, temp_fname3)
     grid_level_cluster(
         input_path=temp_path2,
         output_path=temp_path3,
@@ -451,7 +448,7 @@ def post_process(
     ## Step 4: Link clusters across grid versions
     logger.info("Step 4: linking clusters across grids...")
     temp_fname4 = "temp4-" + uuid.uuid4().hex + ".parquet"
-    temp_path4 = os.path.join(directory, temp_fname4)
+    temp_path4 = os.path.join(work_dir, temp_fname4)
     grid_connected_components(input_path=temp_path3, output_path=temp_path4)
 
     ## Remove third intermediate file
@@ -459,10 +456,9 @@ def post_process(
 
     ## Step 5: Map clusters to cells
     logger.info("Step 5: mapping clusters to cells...")
-    output_path = os.path.join(directory, output_fname)
     map_clusters_to_cells(
         input_path=temp_path4,
-        output_path=output_path,
+        output_path=output_fname,
         nuc_centroid=tma.nuc_xy,
         nuc_ellipse_mat=tma.nuc_ellipse_mat,
         nuc_cell_id=tma.nuc_cell_id,
@@ -478,18 +474,39 @@ def post_process(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_directory", type=str, help="Model directory.")
-    parser.add_argument("--tma_directory", type=str, help="TMA directory.")
+    parser.add_argument(
+        "input_files",
+        type=str,
+        nargs="+",
+        help="Input parquet files from inference",
+    )
+    parser.add_argument("--tma", type=str, required=True, help="Path to tma.npz file")
     parser.add_argument(
         "--cluster_distance",
         type=float,
         default=1.5,
         help="Linkage distance for clustering",
     )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="ef.parquet",
+        help="Output file path (default: ef.parquet)",
+    )
+    parser.add_argument(
+        "--work_dir",
+        type=str,
+        default=".",
+        help="Directory for temporary files (default: current directory)",
+    )
 
     args = parser.parse_args()
-    tma = TMA.load(os.path.join(args.tma_directory, "tma.npz"))
+    tma = TMA.load(args.tma)
 
     post_process(
-        directory=args.model_directory, tma=tma, cluster_distance=args.cluster_distance
+        input_files=args.input_files,
+        work_dir=args.work_dir,
+        tma=tma,
+        cluster_distance=args.cluster_distance,
+        output_fname=args.output,
     )
