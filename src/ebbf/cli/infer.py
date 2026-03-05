@@ -11,7 +11,7 @@ import torch
 from omegaconf import OmegaConf
 
 from ebbf.data.datasets import TxPatchDataset
-from ebbf.data.tma import TMA
+from ebbf.data.st_dataset import STDataset
 from ebbf.inference.infer import FlowInference, infer
 from ebbf.model.model import instantiate_model
 
@@ -35,7 +35,10 @@ def main():
         "--worker_id", type=int, required=True, help="Current worker id"
     )
     parser.add_argument(
-        "--tma_fname", type=str, default=None, help="TMA filename (overrides config)"
+        "--tma_fname",
+        type=str,
+        default=None,
+        help="STDataset filename (overrides config)",
     )
     parser.add_argument(
         "--output_dir",
@@ -77,7 +80,7 @@ def main():
     else:
         tx_path = os.path.join(zarr_dir, "points/transcripts")
     tx_dataset = ds.dataset(tx_path, format="parquet")
-    tma = TMA.load(tma_fname if tma_fname else config.data.tma_fname)
+    tma = STDataset.load(tma_fname if tma_fname else config.data.tma_fname)
     curr_bboxes = np.array_split(tma.boxes, n_workers)[worker_id]
 
     dataset = TxPatchDataset(

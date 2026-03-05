@@ -11,7 +11,7 @@ from ebbf.data.datasets import (
     nuclear_patch_collate_fn,
 )
 from ebbf.data.sampling import NoSimTranscriptSampler, TranscriptSampler
-from ebbf.data.tma import TMA
+from ebbf.data.st_dataset import STDataset
 from ebbf.data.utils import RTree
 
 
@@ -63,7 +63,7 @@ def instantiate_train_dataloader(
     rank: int | None = None,
 ):
 
-    tma = TMA.load(config.data.tma_fname)
+    tma = STDataset.load(config.data.tma_fname)
     config.n_genes = tma.genes.shape[0]
     config.n_ctypes = 1
 
@@ -99,7 +99,7 @@ def instantiate_transcript_sampler(
     config: OmegaConf, device: torch.device | None = None
 ):
     if config.data.sampler == "empirical-bayes":
-        tma = TMA.load(config.data.tma_fname)
+        tma = STDataset.load(config.data.tma_fname)
 
         bin_width = float(tma.max_dist / tma.ellipse_hist_array.shape[-1])
 

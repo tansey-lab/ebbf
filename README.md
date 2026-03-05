@@ -53,15 +53,15 @@ my_data.zarr/
 
 The final output is a parquet file with transcript assignments:
 
-| Column | Description |
-|--------|-------------|
-| `transcript_id` | Original transcript ID |
-| `feature_name` | Gene/feature name |
-| `cell_id` | Original cell assignment |
-| `x`, `y` | Flow-adjusted position |
-| `centroid_distance` | Distance to assigned cell centroid |
-| `mahalanobis_distance` | Mahalanobis distance to cell |
-| `ef_cluster_id` | EBB&Flow cluster assignment |
+| Column                 | Description                        |
+| ---------------------- | ---------------------------------- |
+| `transcript_id`        | Original transcript ID             |
+| `feature_name`         | Gene/feature name                  |
+| `cell_id`              | Original cell assignment           |
+| `x`, `y`               | Flow-adjusted position             |
+| `centroid_distance`    | Distance to assigned cell centroid |
+| `mahalanobis_distance` | Mahalanobis distance to cell       |
+| `ef_cluster_id`        | EBB&Flow cluster assignment        |
 
 ## Usage
 
@@ -72,12 +72,13 @@ Convert a SpatialData zarr directory into the preprocessed format:
 ```bash
 ebbf-preprocess \
     --zarr_dir /path/to/data.zarr \
-    --output /path/to/output/tma.npz \
+    --output /path/to/output/stdata.npz \
     --box_width 400 \
     --max_dist 40
 ```
 
 **Arguments:**
+
 - `--zarr_dir`: Path to SpatialData zarr directory
 - `--output`: Output path for preprocessed `.npz` file
 - `--box_width`: Spatial box width for sampling (default: 400)
@@ -92,9 +93,10 @@ ebbf-train --config configs/example.yaml
 ```
 
 Update the config file to point to your preprocessed data:
+
 ```yaml
 data:
-  tma_fname: /path/to/output/tma.npz
+  tma_fname: /path/to/output/stdata.npz
   # ... other settings
 ```
 
@@ -129,13 +131,13 @@ See `configs/example.yaml` for a full configuration example. Key settings:
 
 ```yaml
 data:
-  tma_fname: /path/to/tma.npz      # Preprocessed data
-  patch_size: 100                   # Spatial patch size
-  max_tx: 32768                     # Max transcripts per batch
+  tma_fname: /path/to/stdata.npz # Preprocessed data
+  patch_size: 100 # Spatial patch size
+  max_tx: 32768 # Max transcripts per batch
 
 model:
-  img_resolution: 128               # Internal resolution
-  model_channels: 128               # Model width
+  img_resolution: 128 # Internal resolution
+  model_channels: 128 # Model width
 
 train:
   batch_size: 64
