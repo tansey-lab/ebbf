@@ -5,11 +5,13 @@ from itertools import product
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import polars as pl
 import pyarrow.dataset as ds
 import shapely
 from scipy.sparse import coo_array, csr_array
 from scipy.spatial import KDTree
+from shapely.geometry import Polygon
 from tqdm import tqdm
 
 from ebbf.compat import get_num_cpus
@@ -17,6 +19,148 @@ from ebbf.data.datasets import NuclearPatchDataset
 from ebbf.data.utils import approximate_ellipse
 
 logger = logging.getLogger(__name__)
+
+
+def detect_input_format(input_dir: str) -> str:
+    """
+    Detect the input format of a directory.
+
+    Returns:
+        "xenium" if it's a Xenium Ranger output directory
+        "spatialdata" if it's a SpatialData zarr directory
+    """
+    # Check for Xenium-specific files
+    xenium_markers = [
+        "transcripts.parquet",
+        "nucleus_boundaries.parquet",
+        "experiment.xenium",
+    ]
+    has_xenium_files = all(
+        os.path.exists(os.path.join(input_dir, f)) for f in xenium_markers[:2]
+    )
+
+    if has_xenium_files:
+        return "xenium"
+
+    # Check for SpatialData structure
+    spatialdata_markers = [
+        "points/transcripts",
+        "shapes/nucleus_boundaries",
+    ]
+    has_spatialdata = all(
+        os.path.exists(os.path.join(input_dir, p)) for p in spatialdata_markers
+    )
+
+    if has_spatialdata:
+        return "spatialdata"
+
+    raise ValueError(
+        f"Could not detect input format for '{input_dir}'. "
+        "Expected either Xenium output "
+        "(transcripts.parquet, nucleus_boundaries.parquet) "
+        "or SpatialData zarr (points/transcripts/, shapes/nucleus_boundaries/)."
+    )
+
+
+def _vertices_to_polygons(df: pd.DataFrame) -> gpd.GeoDataFrame:
+    """
+    Convert Xenium vertex-based boundary format to GeoDataFrame with Shapely polygons.
+
+    Args:
+        df: DataFrame with columns ['cell_id', 'vertex_x', 'vertex_y']
+
+    Returns:
+        GeoDataFrame with cell_id as index and geometry column containing polygons
+    """
+    polygons = []
+    cell_ids = []
+
+    for cell_id, group in df.groupby("cell_id"):
+        coords = list(zip(group["vertex_x"], group["vertex_y"]))
+        if len(coords) >= 3:
+            # Close the polygon if not already closed
+            if coords[0] != coords[-1]:
+                coords.append(coords[0])
+            polygons.append(Polygon(coords))
+            cell_ids.append(cell_id)
+
+    gdf = gpd.GeoDataFrame({"geometry": polygons}, index=cell_ids)
+    gdf.index.name = "cell_id"
+    return gdf
+
+
+def _load_xenium_data(xenium_dir: str):
+    """
+    Load data from a Xenium Ranger output directory.
+
+    Returns:
+        tuple: (points_dataset, nucs_gdf, cells_gdf_or_none, column_mapping)
+            - points_dataset: PyArrow dataset for transcripts
+            - nucs_gdf: GeoDataFrame with nucleus polygons
+            - cells_gdf_or_none: GeoDataFrame with cell polygons or None
+            - column_mapping: dict mapping expected column names to actual names
+    """
+    transcripts_path = os.path.join(xenium_dir, "transcripts.parquet")
+    nucs_path = os.path.join(xenium_dir, "nucleus_boundaries.parquet")
+    cells_path = os.path.join(xenium_dir, "cell_boundaries.parquet")
+
+    # Load nucleus boundaries and convert to polygons
+    logger.info("Loading nucleus boundaries from Xenium format")
+    nucs_df = pd.read_parquet(nucs_path)
+    nucs_gdf = _vertices_to_polygons(nucs_df)
+
+    # Load cell boundaries if present
+    cells_gdf = None
+    if os.path.exists(cells_path):
+        logger.info("Loading cell boundaries from Xenium format")
+        cells_df = pd.read_parquet(cells_path)
+        cells_gdf = _vertices_to_polygons(cells_df)
+
+    # Create points dataset
+    points_dataset = ds.dataset(transcripts_path, format="parquet")
+
+    # Xenium uses x_location/y_location instead of x/y
+    column_mapping = {
+        "x": "x_location",
+        "y": "y_location",
+    }
+
+    return points_dataset, nucs_gdf, cells_gdf, column_mapping
+
+
+def _load_spatialdata(zarr_dir: str):
+    """
+    Load data from a SpatialData zarr directory.
+
+    Returns:
+        tuple: (points_dataset, nucs_gdf, cells_gdf_or_none, column_mapping)
+    """
+    # Determine paths - handle both directory and file parquet formats
+    points_path = os.path.join(zarr_dir, "points/transcripts/points.parquet")
+    if os.path.isdir(points_path):
+        points_folder = points_path
+    else:
+        # Try the parent directory (for partitioned parquet)
+        points_folder = os.path.join(zarr_dir, "points/transcripts")
+
+    nucs_fname = os.path.join(zarr_dir, "shapes/nucleus_boundaries/shapes.parquet")
+    cells_fname = os.path.join(zarr_dir, "shapes/cell_boundaries/shapes.parquet")
+
+    # Load nucleus boundaries
+    nucs_gdf = gpd.read_parquet(nucs_fname)
+
+    # Load cell boundaries if present
+    cells_gdf = None
+    if os.path.isfile(cells_fname):
+        cells_gdf = gpd.read_parquet(cells_fname)
+
+    # Create points dataset
+    points_dataset = ds.dataset(points_folder, format="parquet")
+
+    # SpatialData uses x/y directly
+    column_mapping = {"x": "x", "y": "y"}
+
+    return points_dataset, nucs_gdf, cells_gdf, column_mapping
 
 
 class EllipseLookup:
@@ -124,9 +268,13 @@ _n_nucs = None
 _n_genes = None
 _n_bins = None
 _max_dist = None
+_x_col = None
+_y_col = None
 
 
-def _init_worker(S, c, gene2idx, cell_id2idx, n_nucs, n_genes, n_bins, max_dist):
+def _init_worker(
+    S, c, gene2idx, cell_id2idx, n_nucs, n_genes, n_bins, max_dist, x_col, y_col
+):
     """Initializer, runs once per worker process."""
     global \
         _worker_lookup, \
@@ -135,7 +283,9 @@ def _init_worker(S, c, gene2idx, cell_id2idx, n_nucs, n_genes, n_bins, max_dist)
         _n_nucs, \
         _n_genes, \
         _n_bins, \
-        _max_dist
+        _max_dist, \
+        _x_col, \
+        _y_col
     _worker_lookup = EllipseLookup(S, c)  # your custom class
     _gene2idx = gene2idx
     _cell_id2idx = cell_id2idx
@@ -143,6 +293,8 @@ def _init_worker(S, c, gene2idx, cell_id2idx, n_nucs, n_genes, n_bins, max_dist)
     _n_genes = n_genes
     _n_bins = n_bins
     _max_dist = max_dist
+    _x_col = x_col
+    _y_col = y_col
 
 
 def _assign_to_bin(vals):
@@ -152,7 +304,7 @@ def _assign_to_bin(vals):
 
 def process_batch(batch):
     """Executed for each batch inside worker processes."""
-    global _worker_lookup, _gene2idx, _cell_id2idx, _n_nucs, _n_genes
+    global _worker_lookup, _gene2idx, _cell_id2idx, _n_nucs, _n_genes, _x_col, _y_col
 
     ###########################
     ### Nuclear gene counts ###
@@ -182,7 +334,7 @@ def process_batch(batch):
     ###########################
     ### Histogram distances ###
     ###########################
-    xy = np.array([batch["x"], batch["y"]]).T
+    xy = np.array([batch[_x_col], batch[_y_col]]).T
 
     res = _worker_lookup.lookup(
         xy, drop_zeros=True
@@ -216,11 +368,15 @@ def _compute_histograms(
     c: np.ndarray,
     cell_id2idx: dict[str, int],
     gene2idx: dict[str, int],
+    column_mapping: dict[str, str],
     n_bins: int = 100,
     max_dist: int = 40,
     batch_size: int = 10_000_000,
     num_workers: int | None = None,
 ):
+
+    x_col = column_mapping["x"]
+    y_col = column_mapping["y"]
 
     n_rows = points_dataset.count_rows(filter=(ds.field("is_gene")))
 
@@ -235,8 +391,8 @@ def _compute_histograms(
         batches = points_dataset.to_batches(
             batch_size=batch_size,
             columns=[
-                "x",
-                "y",
+                x_col,
+                y_col,
                 "feature_name",
                 "is_gene",
                 "cell_id",
@@ -254,7 +410,18 @@ def _compute_histograms(
     with cf.ProcessPoolExecutor(
         max_workers=num_workers,
         initializer=_init_worker,
-        initargs=(S, c, gene2idx, cell_id2idx, n_nucs, n_genes, n_bins, max_dist),
+        initargs=(
+            S,
+            c,
+            gene2idx,
+            cell_id2idx,
+            n_nucs,
+            n_genes,
+            n_bins,
+            max_dist,
+            x_col,
+            y_col,
+        ),
     ) as executor:
         # map yields results in submission order, but tqdm tracks progress smoothly
         pbar = tqdm(total=n_rows)
@@ -349,35 +516,51 @@ def process_zarr(
     n_bins: int = 100,
     box_width: float = 400,
     nuc_density_per_um2: float = 1e-5,
+    input_format: str | None = None,
 ):
     """
-    Process a SpatialData zarr directory into an STDataset object.
+    Process spatial transcriptomics data into an STDataset object.
 
-    Creates a uniform grid of tiles over the slide area and keeps
-    any tile that meets the minimum nucleus density threshold.
+    Supports both SpatialData zarr directories and Xenium Ranger output directories.
+    Creates a uniform grid of tiles over the slide area and keeps any tile that
+    meets the minimum nucleus density threshold.
 
     Args:
-        zarr_dir: Path to a SpatialData zarr directory containing:
-            - points/transcripts/points.parquet (or points.parquet/)
-            - shapes/nucleus_boundaries/shapes.parquet
-            - shapes/cell_boundaries/shapes.parquet (optional)
+        zarr_dir: Path to input directory. Can be either:
+            - SpatialData zarr directory with points/transcripts/ and shapes/
+            - Xenium Ranger output directory with transcripts.parquet,
+              nucleus_boundaries.parquet, etc.
         max_dist: Maximum distance for histogram binning
         n_bins: Number of histogram bins
         box_width: Width of spatial tiles
         nuc_density_per_um2: Minimum nucleus density to keep a tile (default: 1e-5)
+        input_format: Input format, either "spatialdata" or "xenium".
+            If None, will auto-detect based on directory contents.
     """
     num_workers = get_num_cpus()
 
-    # Determine paths - handle both directory and file parquet formats
-    points_path = os.path.join(zarr_dir, "points/transcripts/points.parquet")
-    if os.path.isdir(points_path):
-        points_folder = points_path
-    else:
-        # Try the parent directory (for partitioned parquet)
-        points_folder = os.path.join(zarr_dir, "points/transcripts")
+    # Detect or validate input format
+    if input_format is None:
+        input_format = detect_input_format(zarr_dir)
+        logger.info("Detected input format: %s", input_format)
+    elif input_format not in ("spatialdata", "xenium"):
+        raise ValueError(f"Unknown input_format: {input_format}")
 
-    nucs_fname = os.path.join(zarr_dir, "shapes/nucleus_boundaries/shapes.parquet")
-    cells_fname = os.path.join(zarr_dir, "shapes/cell_boundaries/shapes.parquet")
+    # Load data based on format
+    if input_format == "xenium":
+        points_dataset, nucs, cells, column_mapping = _load_xenium_data(zarr_dir)
+    else:
+        points_dataset, nucs, cells, column_mapping = _load_spatialdata(zarr_dir)
+
+    # Get points folder path for polars operations
+    if input_format == "xenium":
+        points_folder = os.path.join(zarr_dir, "transcripts.parquet")
+    else:
+        points_path = os.path.join(zarr_dir, "points/transcripts/points.parquet")
+        if os.path.isdir(points_path):
+            points_folder = points_path
+        else:
+            points_folder = os.path.join(zarr_dir, "points/transcripts")
 
     ## Read gene panel from transcripts
     df = pl.scan_parquet(points_folder)
@@ -386,17 +569,14 @@ def process_zarr(
     panel = np.unique(df["feature_name"].values)
     gene2idx = {x: i for i, x in enumerate(panel)}
 
-    ## Read points/nucleus shapes
-    points_dataset = ds.dataset(points_folder, format="parquet")
-    nucs = gpd.read_parquet(nucs_fname)
+    ## Process nucleus shapes
     nuc_cell_id = nucs.index.values
     cell_id2idx = {x: i for i, x in enumerate(nuc_cell_id)}
     S, _, _, c = approximate_ellipse(nucs.geometry.values)
 
-    ## Read cell shapes (optional)
-    if os.path.isfile(cells_fname):
+    ## Process cell shapes (optional)
+    if cells is not None:
         logger.info("Computing cell polygons")
-        cells = gpd.read_parquet(cells_fname)
         polygons = shapely.make_valid(cells.loc[nuc_cell_id]["geometry"].values)
         cell_triangle_xy, cell_triangle_probs = _compute_polygon_triangulation(polygons)
         cell_triangle_num = np.array([p.shape[0] for p in cell_triangle_probs])
@@ -422,6 +602,7 @@ def process_zarr(
         c,
         cell_id2idx,
         gene2idx,
+        column_mapping,
         n_bins=n_bins,
         max_dist=max_dist,
         num_workers=(num_workers // 2),

@@ -11,10 +11,20 @@ def main():
         description="Preprocess spatial transcriptomics data for EBB&Flow"
     )
     parser.add_argument(
-        "--zarr_dir", type=str, required=True, help="Path to SpatialData zarr directory"
+        "--zarr_dir",
+        type=str,
+        required=True,
+        help="Path to input directory (SpatialData zarr or Xenium output)",
     )
     parser.add_argument(
         "--output", type=str, required=True, help="Output path for stdata.npz file"
+    )
+    parser.add_argument(
+        "--input_format",
+        type=str,
+        choices=["spatialdata", "xenium"],
+        default=None,
+        help="Input format: 'spatialdata' or 'xenium'. Auto-detected if not specified.",
     )
     parser.add_argument(
         "--box_width",
@@ -41,6 +51,7 @@ def main():
         max_dist=args.max_dist,
         n_bins=args.n_bins,
         box_width=args.box_width,
+        input_format=args.input_format,
     )
     tma.save(args.output)
     logger.info("Saved STDataset to %s", args.output)
