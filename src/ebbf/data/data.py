@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
 from ebbf.data.datasets import nuclear_patch_collate_fn
-from ebbf.data.sampling import NoSimTranscriptSampler, TranscriptSampler
+from ebbf.data.sampling import TranscriptSampler
 from ebbf.data.st_dataset import STDataset
 
 
@@ -51,50 +51,31 @@ def instantiate_train_dataloader(
 def instantiate_transcript_sampler(
     config: OmegaConf, device: torch.device | None = None
 ):
-    if config.data.sampler == "empirical-bayes":
-        tx_sampler = TranscriptSampler(
-            patch_size=config.data.patch_size,
-            patch_padding=config.data.patch_padding,
-            max_tx=config.data.max_tx,
-            min_tx_factor=config.data.min_tx_factor,
-            max_tx_factor=config.data.max_tx_factor,
-            oversample_tx_factor=config.data.oversample_tx_factor,
-            img_resolution=config.model.img_resolution,
-            draw_ellipse=(config.model.conditioned is not None),
-            max_nuc_dropout_prob=config.data.max_nuc_dropout_prob,
-            triangle_dirichlet_scale=(
-                config.data.triangle_dirichlet_scale
-                if "triangle_dirichlet_scale" in config.data
-                else 25.0
-            ),
-            max_cell_expansion_factor=(
-                config.data.max_cell_expansion_factor
-                if "max_cell_expansion_factor" in config.data
-                else 1.25
-            ),
-            max_noise_prob=(
-                config.data.max_noise_prob if "max_noise_prob" in config.data else 0.1
-            ),
-            max_noise_scale=(
-                config.data.max_noise_scale if "max_noise_scale" in config.data else 2.0
-            ),
-            device=device,
-        )
-
-    elif config.data.sampler == "no-simulation":
-        tx_sampler = NoSimTranscriptSampler(
-            patch_size=config.data.patch_size,
-            patch_padding=config.data.patch_padding,
-            max_tx=config.data.max_tx,
-            img_resolution=config.model.img_resolution,
-            draw_ellipse=(config.model.conditioned is not None),
-            max_nuc_dropout_prob=config.data.max_nuc_dropout_prob,
-            perturbation_scale=config.data.perturbation_scale,
-            device=device,
-        )
-    else:
-        from ebbf.data.sim_sampling import SimTranscriptSampler
-
-        tx_sampler = SimTranscriptSampler(config=config, device=device)
-
-    return tx_sampler
+    return TranscriptSampler(
+        patch_size=config.data.patch_size,
+        patch_padding=config.data.patch_padding,
+        max_tx=config.data.max_tx,
+        min_tx_factor=config.data.min_tx_factor,
+        max_tx_factor=config.data.max_tx_factor,
+        oversample_tx_factor=config.data.oversample_tx_factor,
+        img_resolution=config.model.img_resolution,
+        draw_ellipse=(config.model.conditioned is not None),
+        max_nuc_dropout_prob=config.data.max_nuc_dropout_prob,
+        triangle_dirichlet_scale=(
+            config.data.triangle_dirichlet_scale
+            if "triangle_dirichlet_scale" in config.data
+            else 25.0
+        ),
+        max_cell_expansion_factor=(
+            config.data.max_cell_expansion_factor
+            if "max_cell_expansion_factor" in config.data
+            else 1.25
+        ),
+        max_noise_prob=(
+            config.data.max_noise_prob if "max_noise_prob" in config.data else 0.1
+        ),
+        max_noise_scale=(
+            config.data.max_noise_scale if "max_noise_scale" in config.data else 2.0
+        ),
+        device=device,
+    )
