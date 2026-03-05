@@ -67,7 +67,6 @@ class FlowInference:
                     gene_idx=batch["tx_gene_idx"],
                     t=torch.atleast_1d(t),
                     tx_seqlens=batch["tx_seqlens"],
-                    nuc_pos=(batch["nuc_xy"] if "nuc_xy" in batch else None),
                     nuc_seqlens=(
                         batch["nuc_seqlens"] if "nuc_seqlens" in batch else None
                     ),

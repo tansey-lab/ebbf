@@ -139,7 +139,6 @@ class Trainer:
             gene_idx=tx_batch["tx_gene_idx"],
             t=tx_batch["t"],
             tx_seqlens=tx_batch["tx_seqlens"],
-            nuc_pos=(tx_batch["nuc2xy"] if "nuc2xy" in tx_batch else None),
             nuc_seqlens=(
                 tx_batch["nuc_seqlens"] if "nuc_seqlens" in tx_batch else None
             ),

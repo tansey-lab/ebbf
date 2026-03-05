@@ -39,9 +39,3 @@ class NuclearBatch:
         for k, v in self.__dict__.items():
             if isinstance(v, torch.Tensor):
                 setattr(self, k, v.to(device))
-
-    def has_ellipse_mat(self):
-        return self.nuc2ellipse_mat is not None
-
-    def has_cell_triangle(self):
-        return self.nuc2cell_triangle_xy is not None

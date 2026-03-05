@@ -88,40 +88,6 @@ class NuclearPatchDataset(Dataset):
         n = self.dataset_size
         return n
 
-    def _retrieve_patch(self, patch_center: torch.Tensor):
-
-        idx = self.rtree.lookup_center_radius(
-            x_center=patch_center[0, 0].item(),
-            y_center=patch_center[0, 1].item(),
-            radius=(0.5 * self.patch_size + self.patch_padding),
-        ).long()
-
-        nuc2xy = self.nuc2xy[idx]
-        nuc2genes_idx_seq, nuc2genes_probs_seq, nuc2genes_seqlens = (
-            self.nuc2gene_probs.slice_rows_sequence(idx)
-        )
-        nuc2total_gene_count = self.nuc2total_gene_count[idx]
-        self.nuc2cell_count[idx]
-        nuc2ctype = self.nuc2ctype[idx]
-
-        result = {
-            "patch_center": patch_center,
-            "nuc_idx": idx,
-            "nuc2xy": nuc2xy,
-            "nuc2ctype": nuc2ctype,
-            "nuc2total_gene_count": nuc2total_gene_count,
-            "nuc2genes_idx_seq": nuc2genes_idx_seq,
-            "nuc2genes_probs_seq": nuc2genes_probs_seq,
-            "nuc2genes_seqlens": nuc2genes_seqlens,
-        }
-
-        if self.nuc2ellipse_mat is not None:
-            result["nuc2ellipse_mat"] = self.nuc2ellipse_mat[idx]
-        else:
-            result["nuc2ellipse_mat"] = torch.zeros(1)
-
-        return result
-
     def _sample_patch(self):
         ## Sample a patch from the data region
         n_nuc = 0

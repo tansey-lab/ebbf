@@ -2,7 +2,6 @@ experiment_name: coad
 seed: 100
 
 data:
-  sampler: empirical-bayes
   tma_fname: /data1/tanseyw/projects/tosh/nuc_diffusion/data/spatch/coad/stdata.npz
   patch_size: 100
   patch_padding: 10

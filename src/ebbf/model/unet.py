@@ -5,25 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange
 from omegaconf import OmegaConf
-
-#################################################################################
-#                                   Layer Norm                                  #
-#################################################################################
-
-
-class LayerNorm(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones([dim]))
-        self.dim = dim
-
-    def forward(self, x):
-        with torch.amp.autocast("cuda", enabled=False):
-            x = F.layer_norm(x.float(), [self.dim])
-        return x * self.weight[(None,) * (x.dim() - 1)]
-
 
 #################################################################################
 #               Embedding Layers for Timesteps and Class Labels                 #
@@ -249,58 +231,6 @@ class Conv2d(torch.nn.Module):
                 x = F.conv2d(x, w, padding=w_pad)
         if b is not None:
             x = x.add_(b.reshape(1, -1, 1, 1))
-        return x
-
-
-class LayerwiseCrossAttention(nn.Module):
-    def __init__(self, dim: int, height: int, width: int, n_heads: int):
-        super().__init__()
-        self.height = height
-        self.width = width
-        self.im_area = height * width
-        self.norm_q = LayerNorm(self.im_area)
-        self.norm_kv = LayerNorm(self.im_area)
-
-        self.cross_attn_q = nn.Linear(self.im_area, dim, bias=False)
-        self.cross_attn_kv = nn.Linear(self.im_area, 2 * dim, bias=False)
-        self.lift = nn.Linear(dim, self.im_area, bias=True)
-
-        self.n_heads = n_heads
-
-    def forward(
-        self,
-        x_q: torch.Tensor,  ## B x C_q x H x W
-        x_kv: torch.Tensor,  ## B x C_k x H x W
-    ):
-        x_skip = x_q
-
-        # Q matrix
-        x_q = rearrange(x_q, "b c h w -> b c (h w)")
-        x_q = self.norm_q(x_q)
-        q = self.cross_attn_q(x_q)
-        q: torch.Tensor = rearrange(q, "b c (h d) -> b h c d", h=self.n_heads)
-
-        # K, V matrix
-        x_kv = rearrange(x_kv, "b c h w -> b c (h w)")
-        x_kv = self.norm_kv(x_kv)
-        kv = self.cross_attn_kv(x_kv)
-        kv: torch.Tensor = rearrange(
-            kv, "b c (two h d) -> b two h c d", two=2, h=self.n_heads
-        )
-        k, v = kv.chunk(2, dim=-4)
-
-        ## Cross attention
-        x = F.scaled_dot_product_attention(
-            query=q.squeeze(), key=k.squeeze(), value=v.squeeze()
-        )
-        x = rearrange(x, "b h c d -> b c (h d)")
-
-        ## Lift back up to image dimensions
-        x = self.lift(x)
-        x = rearrange(x, "b c (h w) -> b c h w", h=self.height, w=self.width)
-
-        ## Add back in the skip connection
-        x = x + x_skip
         return x
 
 
