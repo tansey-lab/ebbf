@@ -303,7 +303,6 @@ class TxFlowUNet(nn.Module):
         t: torch.Tensor,  ## B
         tx_pos: torch.Tensor,  ## L x 2
         tx_seqlens: torch.Tensor | None,
-        nuc_pos: torch.Tensor | None = None,
         nuc_ellipse_pos: torch.Tensor | None = None,  ## E x 2
         nuc_ellipse_seqlens: torch.Tensor | None = None,  ## N
         nuc_ctypes: torch.Tensor | None = None,  ## N

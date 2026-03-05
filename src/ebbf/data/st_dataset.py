@@ -115,69 +115,6 @@ class EllipseLookup:
 
         return result
 
-    def ellipse_lookup(self, xy: np.ndarray):
-        n = xy.shape[0]
-
-        ## Check to see if we lie inside of any ellipses
-        _, centroid_idx = self.centroid_lookup.query(xy, k=5)
-
-        d = xy[:, np.newaxis, :] - self.c[centroid_idx]
-
-        ellipse_condition = (
-            np.einsum("...i,...ij,...j->...", d, self.Q[centroid_idx], d) <= 1
-        )
-        inside_ellipse_mask1 = ellipse_condition.any(axis=-1)
-        inside_ellipse_idx1 = centroid_idx[
-            np.arange(n), np.argmax(ellipse_condition, axis=-1)
-        ]
-
-        ## Get closest ellipse boundary
-        _, ellipse_pt_idx = self.nuc_ellipse_lookup.query(xy, k=1)
-        ellipse_pt_nuc_idx = self.nuc_idx_flat[ellipse_pt_idx]
-
-        diff_closest_nuc_centroid = xy - self.c[ellipse_pt_nuc_idx]
-        dist_to_closest_nuc_centroid = np.linalg.norm(
-            diff_closest_nuc_centroid, axis=-1
-        )
-        mahalanobis_distance_to_closest_nuc_centroid = np.sqrt(
-            np.einsum(
-                "...i,...ij,...j->...",
-                diff_closest_nuc_centroid,
-                self.Q[ellipse_pt_nuc_idx],
-                diff_closest_nuc_centroid,
-            )
-        )
-
-        ## We may have missed some points that are inside an ellipse
-        ## We'll just drop these
-        inside_ellipse_mask2 = mahalanobis_distance_to_closest_nuc_centroid <= 1.0
-        ellipse_dist = dist_to_closest_nuc_centroid * (
-            1
-            - (
-                1.0
-                / np.clip(
-                    mahalanobis_distance_to_closest_nuc_centroid, a_min=1e-3, a_max=None
-                )
-            )
-        )
-
-        ## Overwrite these points
-        ellipse_pt_nuc_idx[inside_ellipse_mask1] = inside_ellipse_idx1[
-            inside_ellipse_mask1
-        ]
-        ellipse_dist[inside_ellipse_mask1 | inside_ellipse_mask2] = 0.0
-
-        ## Compute distance to the centroid
-        centroid_distance = np.linalg.norm(xy - self.c[ellipse_pt_nuc_idx], axis=-1)
-
-        result = {
-            "ellipse_idx": ellipse_pt_nuc_idx,
-            "ellipse_distance": ellipse_dist,
-            "centroid_distance": centroid_distance,
-        }
-
-        return result
-
 
 # --- Globals set once per worker ---
 _worker_lookup = None

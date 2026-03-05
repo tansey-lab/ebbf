@@ -90,4 +90,5 @@ dev = [
     "ruff>=0.1.0",
     "pre-commit>=3.0",
     "ipython>=9.11.0",
+    "vulture>=2.0",
 ]

@@ -90,22 +90,6 @@ class TestRTree:
         indices = rtree.lookup_center_radius(x_center=150, y_center=150, radius=200)
         assert len(indices) == 2
 
-    def test_rtree_get_bbox(self):
-        """Test that get_bbox returns correct bounds."""
-        xy = np.array(
-            [
-                [100.0, 200.0],
-                [300.0, 400.0],
-            ]
-        )
-        rtree = RTree(xy)
-        bbox = rtree.get_bbox()
-        # bbox is (xmin, xmax, ymin, ymax)
-        assert bbox[0] == 100.0  # xmin
-        assert bbox[1] == 300.0  # xmax
-        assert bbox[2] == 200.0  # ymin
-        assert bbox[3] == 400.0  # ymax
-
 
 class TestNuclearPatchDataset:
     """Tests for NuclearPatchDataset patch sampling behavior."""
@@ -233,8 +217,9 @@ class TestSparseDataset:
 
     def test_rtree_contains_all_nuclei(self, sparse_dataset):
         """Verify RTree contains all nuclei from the dataset."""
-        bbox = sparse_dataset.rtree.get_bbox()
-        xmin, xmax, ymin, ymax = bbox
+        # Use data_min/data_max which are computed from nuclei positions
+        xmin, ymin = sparse_dataset.data_min.tolist()
+        xmax, ymax = sparse_dataset.data_max.tolist()
 
         # Query for all nuclei using the bounding box
         all_indices = sparse_dataset.rtree.lookup(

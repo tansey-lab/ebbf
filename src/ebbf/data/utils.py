@@ -49,11 +49,6 @@ class RTree:
 
         self.index_table = index.Index(generator_function())
 
-    def get_bbox(self):
-        xmin, ymin, xmax, ymax = self.index_table.bounds
-        bbox = (xmin, xmax, ymin, ymax)
-        return bbox
-
     def lookup_center_radius(
         self, x_center: float, y_center: float, radius: float, only_index: bool = True
     ):
@@ -101,53 +96,6 @@ class RTree:
                     "xy": torch.empty(0, 2),
                 }
             return result
-
-
-class TxRTree:
-    def __init__(self, tx_xy: np.ndarray, tx_genes: np.ndarray, tx_nuc_idx: np.ndarray):
-
-        self.n_tx = tx_xy.shape[0]
-
-        def generator_function(tx_xy, tx_genes, tx_nuc_idx):
-            for i, ((x, y), gene, nuc_idx) in enumerate(
-                zip(tx_xy, tx_genes, tx_nuc_idx)
-            ):
-                yield (
-                    i,
-                    (float(x), float(y), float(x), float(y)),
-                    (int(gene), int(nuc_idx)),
-                )
-
-        self.lookup_table = index.Index(generator_function(tx_xy, tx_genes, tx_nuc_idx))
-
-    def lookup(self, xmin: float, xmax: float, ymin: float, ymax: float):
-        bounds = (xmin, ymin, xmax, ymax)
-        output = self.lookup_table.intersection(bounds, objects=True)
-        try:
-            tidx, xy, gene, nidx = zip(
-                *[
-                    (x.id, (x.bounds[0], x.bounds[2]), x.object[0], x.object[1])
-                    for x in output
-                ]
-            )
-        except ValueError:
-            tidx = []
-            xy = []
-            gene = []
-            nidx = []
-
-        n_tx = len(xy)
-        if n_tx == 0:
-            tx_idx = torch.empty(0, dtype=torch.int64)
-            tx_xy = torch.empty(0, 2)
-            tx_genes = torch.empty(0, dtype=torch.int64)
-            tx_nuc_idx = torch.empty(0, dtype=torch.int64)
-        else:
-            tx_idx = torch.tensor(tidx, dtype=torch.int64)
-            tx_xy = torch.tensor(xy)
-            tx_genes = torch.tensor(gene, dtype=torch.int64)
-            tx_nuc_idx = torch.tensor(nidx, dtype=torch.int64)
-        return (tx_idx, tx_xy, tx_genes, tx_nuc_idx)
 
 
 class TorchCSR:
