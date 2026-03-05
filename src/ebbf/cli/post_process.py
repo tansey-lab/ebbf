@@ -1,6 +1,6 @@
 import argparse
 
-from ebbf.data.tma import TMA
+from ebbf.data.st_dataset import STDataset
 from ebbf.inference.post_process import post_process
 
 
@@ -14,7 +14,9 @@ def main():
         nargs="+",
         help="Input parquet files from inference",
     )
-    parser.add_argument("--tma", type=str, required=True, help="Path to tma.npz file")
+    parser.add_argument(
+        "--tma", type=str, required=True, help="Path to stdata.npz file"
+    )
     parser.add_argument(
         "--cluster_distance",
         type=float,
@@ -35,7 +37,7 @@ def main():
     )
     args = parser.parse_args()
 
-    tma = TMA.load(args.tma)
+    tma = STDataset.load(args.tma)
     post_process(
         input_files=args.input_files,
         work_dir=args.work_dir,

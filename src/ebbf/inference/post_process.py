@@ -17,7 +17,7 @@ from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 
 from ebbf.compat import get_num_cpus
-from ebbf.data.tma import TMA
+from ebbf.data.st_dataset import STDataset
 
 logger = logging.getLogger(__name__)
 
@@ -396,7 +396,7 @@ def map_clusters_to_cells(
 
 def post_process(
     input_files: list[str],
-    tma: TMA,
+    tma: STDataset,
     cluster_distance: float,
     output_fname: str = "ef.parquet",
     work_dir: str = ".",
@@ -480,7 +480,9 @@ if __name__ == "__main__":
         nargs="+",
         help="Input parquet files from inference",
     )
-    parser.add_argument("--tma", type=str, required=True, help="Path to tma.npz file")
+    parser.add_argument(
+        "--tma", type=str, required=True, help="Path to stdata.npz file"
+    )
     parser.add_argument(
         "--cluster_distance",
         type=float,
@@ -501,7 +503,7 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    tma = TMA.load(args.tma)
+    tma = STDataset.load(args.tma)
 
     post_process(
         input_files=args.input_files,

@@ -14,7 +14,7 @@ from torchdiffeq import odeint
 from tqdm import tqdm
 
 from ebbf.data.datasets import TxPatchDataset, tx_patch_collate_fn
-from ebbf.data.tma import TMA
+from ebbf.data.st_dataset import STDataset
 from ebbf.data.utils import ellipse_grid_indices
 from ebbf.model.model import instantiate_model
 
@@ -201,7 +201,7 @@ if __name__ == "__main__":
 
     ## Load in the data
     tx_dataset = ds.dataset(transcripts_fname, format="parquet")
-    tma = TMA.load(config.data.tma_fname)
+    tma = STDataset.load(config.data.tma_fname)
     curr_bboxes = np.array_split(tma.boxes, n_workers)[worker_id]
 
     dataset = TxPatchDataset(

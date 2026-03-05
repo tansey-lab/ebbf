@@ -2,7 +2,7 @@
 Legacy script for converting Xenium data to SpatialData zarr format and processing.
 
 For direct zarr processing, use the CLI:
-    ebbf-preprocess --zarr_dir /path/to/data.zarr --output /path/to/tma.npz
+    ebbf-preprocess --zarr_dir /path/to/data.zarr --output /path/to/stdata.npz
 """
 
 import os
@@ -10,7 +10,7 @@ import os
 import pandas as pd
 import polars as pl
 
-from ebbf.data.tma import process_zarr
+from ebbf.data.st_dataset import process_zarr
 from ebbf.utils import compute_polygons
 
 if __name__ == "__main__":
@@ -58,4 +58,4 @@ if __name__ == "__main__":
 
     # Process the zarr directory
     tma = process_zarr(zarr_dir=zarr_dir)
-    tma.save(os.path.join(output_folder, "tma.npz"))
+    tma.save(os.path.join(output_folder, "stdata.npz"))

@@ -414,7 +414,7 @@ def process_zarr(
     nuc_density_per_um2: float = 1e-5,
 ):
     """
-    Process a SpatialData zarr directory into a TMA object.
+    Process a SpatialData zarr directory into an STDataset object.
 
     Creates a uniform grid of tiles over the slide area and keeps
     any tile that meets the minimum nucleus density threshold.
@@ -537,7 +537,7 @@ def process_zarr(
     # No cell types - set all to 0
     nuc_ctype_idx = np.zeros(len(nuc_cell_id), dtype=np.int64)
 
-    tma = TMA(
+    tma = STDataset(
         boxes=boxes,
         centroid_hist_array=centroid_hist_array,
         ellipse_hist_array=ellipse_hist_array,
@@ -560,7 +560,7 @@ def process_zarr(
     return tma
 
 
-class TMA:
+class STDataset:
     def __init__(
         self,
         boxes: np.ndarray,

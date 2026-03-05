@@ -1,7 +1,7 @@
 import argparse
 import logging
 
-from ebbf.data.tma import process_zarr
+from ebbf.data.st_dataset import process_zarr
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +14,7 @@ def main():
         "--zarr_dir", type=str, required=True, help="Path to SpatialData zarr directory"
     )
     parser.add_argument(
-        "--output", type=str, required=True, help="Output path for tma.npz file"
+        "--output", type=str, required=True, help="Output path for stdata.npz file"
     )
     parser.add_argument(
         "--box_width",
@@ -43,4 +43,4 @@ def main():
         box_width=args.box_width,
     )
     tma.save(args.output)
-    logger.info("Saved TMA to %s", args.output)
+    logger.info("Saved STDataset to %s", args.output)

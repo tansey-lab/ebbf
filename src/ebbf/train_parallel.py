@@ -333,7 +333,7 @@ if __name__ == "__main__":
         prev_model_folder = config.prev_model_folder
         uconfig = OmegaConf.load(os.path.join(prev_model_folder, "config.yaml"))
         uconfig.model_initialization = os.path.join(prev_model_folder, "chkpoint.pt")
-        uconfig.data.tma_fname = os.path.join(prev_model_folder, "tma.npz")
+        uconfig.data.tma_fname = os.path.join(prev_model_folder, "stdata.npz")
         config = OmegaConf.merge(uconfig, config)
 
     world_size = torch.cuda.device_count()

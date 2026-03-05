@@ -6,7 +6,7 @@ process EBBF_PREPROCESS {
     tuple val(meta), path(zarr_dir)
 
     output:
-    tuple val(meta), path("tma.npz"), emit: tma
+    tuple val(meta), path("stdata.npz"), emit: tma
     path "versions.yml"             , emit: versions
 
     script:
@@ -15,7 +15,7 @@ process EBBF_PREPROCESS {
     """
     ebbf-preprocess \\
         --zarr_dir ${zarr_dir} \\
-        --output tma.npz \\
+        --output stdata.npz \\
         ${args}
 
     cat <<-END_VERSIONS > versions.yml

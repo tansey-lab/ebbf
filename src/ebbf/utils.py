@@ -6,7 +6,7 @@ import shapely
 from scipy.sparse import coo_array, csr_array
 from tqdm import tqdm
 
-from ebbf.data.tma import EllipseLookup
+from ebbf.data.st_dataset import EllipseLookup
 
 
 def batch_generator(dataset: ds.Dataset, cols: list[str], batch_size: int):
