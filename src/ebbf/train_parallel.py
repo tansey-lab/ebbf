@@ -70,10 +70,7 @@ class Trainer:
 
         logger.info("Instantiating transcript sampler...")
         self.tx_sampler = instantiate_transcript_sampler(config, device=device)
-        logger.info(
-            f"Transcript sampler ready (max_tx={config.data.max_tx}, "
-            f"sample_mode={config.data.sample_mode})"
-        )
+        logger.info(f"Transcript sampler ready (max_tx={config.data.max_tx})")
         self.time_distribution = Beta(
             torch.tensor(1.0, device=device).float(),
             torch.tensor(config.train.time_skew, device=device).float(),

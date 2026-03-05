@@ -14,7 +14,6 @@ class NuclearBatch:
         nuc2genes_probs_seq: torch.Tensor | None = None,  ## n_sparse_genes
         nuc2genes_idx_seq: torch.Tensor | None = None,  ## n_sparse_genes
         nuc2genes_seqlens: torch.Tensor | None = None,  ## n_nucs
-        punch_idx: torch.Tensor | None = None,  ## B
         nuc2ellipse_mat: torch.Tensor | None = None,  ## n_nucs x 2 x 2
         nuc2cell_triangle_xy: torch.Tensor | None = None,  ## n_triangles
         nuc2cell_triangle_probs: torch.Tensor | None = None,  ## n_triangles
@@ -22,7 +21,6 @@ class NuclearBatch:
     ):
 
         self.patch_center = patch_center
-        self.punch_idx = punch_idx
         self.nuc_idx = nuc_idx
         self.nuc2xy = nuc2xy
         self.nuc2ctype = nuc2ctype

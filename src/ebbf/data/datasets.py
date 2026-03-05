@@ -23,7 +23,6 @@ class NuclearPatchDataset(Dataset):
         nuc2gene_probs: csr_array,  ## n_nucs x n_genes
         nuc2ctype: np.ndarray,  ## n_nucs
         nuc2cell_count: np.ndarray,
-        punch_bounds: np.ndarray,  ## n_punches x 4 (minx, miny, maxx, maxy)
         patch_size: float,
         patch_padding: float,
         dataset_size: int,
@@ -34,11 +33,9 @@ class NuclearPatchDataset(Dataset):
         cell_triangle_probs: np.ndarray | None = None,
     ):
 
-        self.n_punches: int = punch_bounds.shape[0]
-        self.punch_scale_factor = torch.from_numpy(
-            punch_bounds[:, [2, 3]] - punch_bounds[:, [0, 1]]
-        ).float()
-        self.punch_translate_factor = torch.from_numpy(punch_bounds[:, [0, 1]]).float()
+        # Compute bounds directly from nuclei positions
+        self.data_min = torch.from_numpy(nuc2xy.min(axis=0)).float()
+        self.data_max = torch.from_numpy(nuc2xy.max(axis=0)).float()
 
         self.nuc2gene_probs = TorchCSR(nuc2gene_probs)
         self.n_genes: int = nuc2gene_probs.shape[1]
@@ -91,7 +88,7 @@ class NuclearPatchDataset(Dataset):
         n = self.dataset_size
         return n
 
-    def _retrieve_patch(self, patch_center: torch.Tensor, punch_idx: torch.Tensor):
+    def _retrieve_patch(self, patch_center: torch.Tensor):
 
         idx = self.rtree.lookup_center_radius(
             x_center=patch_center[0, 0].item(),
@@ -116,7 +113,6 @@ class NuclearPatchDataset(Dataset):
             "nuc2genes_idx_seq": nuc2genes_idx_seq,
             "nuc2genes_probs_seq": nuc2genes_probs_seq,
             "nuc2genes_seqlens": nuc2genes_seqlens,
-            "punch_idx": punch_idx,
         }
 
         if self.nuc2ellipse_mat is not None:
@@ -127,7 +123,7 @@ class NuclearPatchDataset(Dataset):
         return result
 
     def _sample_patch(self):
-        ## Get subset of nuclei that are on this punch
+        ## Sample a patch from the data region
         n_nuc = 0
         n_tries = 0
         while n_nuc < self.min_nucs:
@@ -137,14 +133,12 @@ class NuclearPatchDataset(Dataset):
                     f"_sample_patch: {n_tries} tries to find patch with "
                     f">={self.min_nucs} nuclei (found {n_nuc})"
                 )
-            punch_idx: int = torch.randint(self.n_punches, size=()).item()
 
-            ## Sample the center of the patch
+            ## Sample the center of the patch within data bounds
             patch_center = torch.rand(1, 2)
             patch_center = (
-                self.punch_scale_factor[punch_idx] * patch_center
-                + self.punch_translate_factor[punch_idx]
-            )
+                self.data_max - self.data_min
+            ) * patch_center + self.data_min
 
             idx = self.rtree.lookup_center_radius(
                 x_center=patch_center[0, 0].item(),
@@ -179,7 +173,6 @@ class NuclearPatchDataset(Dataset):
             "nuc2genes_idx_seq": nuc2genes_idx_seq,
             "nuc2genes_probs_seq": nuc2genes_probs_seq,
             "nuc2genes_seqlens": nuc2genes_seqlens,
-            "punch_idx": punch_idx,
         }
 
         if self.nuc2ellipse_mat is not None:
@@ -216,7 +209,6 @@ def nuclear_patch_collate_fn(batch: tuple[dict[str, torch.Tensor]]):
         nuc2ellipse_mat=torch.concat([x["nuc2ellipse_mat"] for x in batch], dim=0),
         nuc2genes_seqlens=torch.concat([x["nuc2genes_seqlens"] for x in batch], dim=0),
         nuc_seqlens=torch.tensor([x["nuc2xy"].shape[0] for x in batch]),
-        punch_idx=torch.tensor([x["punch_idx"] for x in batch], dtype=torch.long),
         nuc2cell_triangle_xy=torch.concat(
             [x["nuc2cell_triangle_xy"] for x in batch], dim=0
         ),

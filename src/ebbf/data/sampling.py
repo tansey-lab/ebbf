@@ -1,7 +1,5 @@
-import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.linalg import vector_norm
 
 from ebbf.data.patch import NuclearBatch
 from ebbf.data.utils import ellipse_grid_indices, segmented_cumsum, segmented_sum
@@ -165,10 +163,6 @@ class TranscriptSampler:
         min_tx_factor: int,
         max_tx_factor: int,
         oversample_tx_factor: int,
-        hists: np.ndarray,  ## n_punches x (n_ctypes+1) x n_bins
-        bin_width: float,
-        correction_factor: np.ndarray | float,
-        sample_mode: str,
         img_resolution: int,
         draw_ellipse: bool = False,
         max_nuc_dropout_prob: float = 0.0,
@@ -176,21 +170,14 @@ class TranscriptSampler:
         max_cell_expansion_factor: float = 1.25,
         max_noise_prob: float = 0.1,
         max_noise_scale: float = 2.0,
-        hist_mode: str = "punch+ctype",
         device: torch.device | None = None,
-        eps: float = 1e-8,
     ):
-
         self.patch_size = patch_size
         self.patch_padding = patch_padding
         self.max_tx = max_tx
         self.min_tx_factor = min_tx_factor
         self.max_tx_factor = max_tx_factor
         self.oversample_tx_factor = oversample_tx_factor
-        self.bin_width = bin_width
-        self.hist_mode = hist_mode
-        self.n_punches = hists.shape[0]
-        self.sample_mode = sample_mode
         self.draw_ellipse = draw_ellipse
         self.max_nuc_dropout_prob = max_nuc_dropout_prob
         self.img_resolution = img_resolution
@@ -198,115 +185,7 @@ class TranscriptSampler:
         self.max_cell_expansion_factor = max_cell_expansion_factor
         self.max_noise_prob = max_noise_prob
         self.max_noise_scale = max_noise_scale
-
-        hists_ = hists.astype(float) + eps
-        if hist_mode == "punch+ctype":
-            hist_probs = hists_ / hists_.sum(axis=-1, keepdims=True)
-        elif hist_mode == "punch":
-            hist_probs = hists_[:, -1, :] / hists_[:, -1, :].sum(axis=-1, keepdims=True)
-        elif hist_mode == "ctype":
-            hists_ = hists_.sum(axis=0)
-            hist_probs = hists_ / hists_.sum(axis=-1, keepdims=True)
-        else:
-            hists_ = hists_[:, -1, :].sum(axis=0)
-            hist_probs = hists_ / hists_.sum()
-
-        self.hist_probs = torch.from_numpy(hist_probs).float()
-
-        ## Correction factor = # of total transcripts / # of nuclear transcripts
-        self.correction_factor = torch.tensor(correction_factor).float()
-
-        if len(self.correction_factor.shape) == 0:  ## Global correction factor
-            self.correction_factor = torch.repeat_interleave(
-                self.correction_factor, self.n_punches
-            )
-
-        if device is not None:
-            self.hist_probs = self.hist_probs.to(device)
-            self.correction_factor = self.correction_factor.to(device)
-
-    def _sample_hist_distance(self, ctype: torch.Tensor, punch_idx: torch.Tensor):
-        n_tx = ctype.shape[0]
-        if self.hist_mode == "punch+ctype":  ## hist_probs - (p x c x k)
-            probs = self.hist_probs[punch_idx, ctype]
-        elif self.hist_mode == "punch":  ## hist_probs - (p x k)
-            probs = self.hist_probs[punch_idx]
-        elif self.hist_mode == "ctype":  ## hist_probs - (c x k)
-            probs = self.hist_probs[ctype]
-        else:  ## hist_probs - (k,)
-            probs = torch.repeat_interleave(
-                self.hist_probs.unsqueeze(0), repeats=n_tx, dim=0
-            )
-
-        bin_idx = torch.multinomial(probs, num_samples=1).squeeze().float()
-        offset = torch.rand(ctype.shape[0], device=ctype.device)
-        tx_dist = self.bin_width * (offset + bin_idx)
-
-        return tx_dist
-
-    def _sample_isotropic_offsets(self, ctype: torch.Tensor, punch_idx: torch.Tensor):
-        n_tx = ctype.shape[0]
-        device = ctype.device
-
-        tx_dist = self._sample_hist_distance(ctype, punch_idx)
-        tx_direction = torch.randn(n_tx, 2, device=device)
-        tx_direction: torch.Tensor = tx_direction / vector_norm(
-            tx_direction, dim=-1, keepdim=True
-        )
-
-        tx_offset = tx_dist.unsqueeze(-1) * tx_direction
-
-        return tx_offset
-
-    def _sample_ellipse_offsets(
-        self,
-        ctype: torch.Tensor,
-        punch_idx: torch.Tensor,
-        nuc2ellipse_mat: torch.Tensor,
-    ):
-
-        n_tx = ctype.shape[0]
-        device = ctype.device
-        tx_offset = torch.empty(n_tx, 2, device=device)
-
-        ## With some probability, we generate tx within the nucleus
-        within_nuc_prob = 1.0 / self.correction_factor[punch_idx]
-        within_nuc_mask = torch.rand(n_tx, device=device) <= within_nuc_prob
-        n_within_nuc = torch.count_nonzero(within_nuc_mask)
-
-        ## Generate points on the unit circle
-        unit_circle_pts = torch.randn(n_tx, 2, device=device)
-        unit_circle_pts: torch.Tensor = unit_circle_pts / vector_norm(
-            unit_circle_pts, dim=-1, keepdim=True
-        )
-
-        ## For points inside the nucleus, transform uniform over disk to ellipse
-        radius = torch.sqrt(torch.rand(n_within_nuc, 1, device=device))
-        rand_within_circle_pts = radius * unit_circle_pts[within_nuc_mask]  ## S x 2
-        inside_nuc_pts = torch.einsum(
-            "bij,bj->bi", nuc2ellipse_mat[within_nuc_mask], rand_within_circle_pts
-        )
-
-        ## For points outside the nucleus, generate random point on ellipse and
-        ## the amount sampled from
-        outside_nuc_mask = ~within_nuc_mask
-        dist_from_ellipse = self._sample_hist_distance(
-            ctype[outside_nuc_mask], punch_idx[outside_nuc_mask]
-        )
-        on_ellipse_pts = torch.einsum(
-            "bij, bj -> bi",
-            nuc2ellipse_mat[outside_nuc_mask],
-            unit_circle_pts[outside_nuc_mask],
-        )
-        norm_factor: torch.Tensor = 1.0 + (
-            dist_from_ellipse / vector_norm(on_ellipse_pts, dim=-1)
-        )
-        outside_nuc_pts = on_ellipse_pts * norm_factor.unsqueeze(-1)
-
-        tx_offset[within_nuc_mask] = inside_nuc_pts
-        tx_offset[outside_nuc_mask] = outside_nuc_pts
-
-        return tx_offset
+        self.device = device
 
     def _sample_polygon_offset(
         self,
@@ -360,7 +239,6 @@ class TranscriptSampler:
 
     def sample_transcripts(self, nuc_batch: NuclearBatch):
         patch_center = nuc_batch.patch_center
-        punch_idx = nuc_batch.punch_idx
         nuc_seqlens = nuc_batch.nuc_seqlens
         nuc2ellipse_mat = nuc_batch.nuc2ellipse_mat
         nuc2ctype = nuc_batch.nuc2ctype
@@ -370,16 +248,6 @@ class TranscriptSampler:
         device = patch_center.device
 
         ## Subsample nuclei of origin
-        # corr_factor = self.correction_factor[punch_idx]
-        # unfiltered_tx2nuc_idx, sample_sizes = bootstrap_sample_sequence(
-        #     counts=nuc_batch.nuc2total_gene_count,
-        #     seqlens=nuc_seqlens,
-        #     with_offsets=True,
-        #     min_factor=(self.min_tx_factor*corr_factor),
-        #     max_factor=(self.max_tx_factor*corr_factor),
-        #     oversample_factor=self.oversample_tx_factor,
-        #     max_size=self.max_tx)
-
         unfiltered_tx2nuc_idx, sample_sizes = bootstrap_sample_sequence(
             counts=nuc_batch.nuc2cell_count,
             seqlens=nuc_seqlens,
@@ -402,31 +270,18 @@ class TranscriptSampler:
 
         unfiltered_tx_genes = nuc_batch.nuc2genes_idx_seq[indices]
 
-        unfiltered_tx_2_ctype = nuc2ctype[unfiltered_tx2nuc_idx]
         unfiltered_tx_batch_indices = torch.repeat_interleave(
             torch.arange(B).to(device), sample_sizes
         )
-        unfiltered_tx_2_punch_idx = punch_idx[unfiltered_tx_batch_indices]
 
         ## Sample distances from nuclei for each transcript
-        if self.sample_mode == "ellipse":
-            unfiltered_tx_offset = self._sample_ellipse_offsets(
-                ctype=unfiltered_tx_2_ctype,
-                punch_idx=unfiltered_tx_2_punch_idx,
-                nuc2ellipse_mat=nuc2ellipse_mat[unfiltered_tx2nuc_idx],
-            )
-        elif self.sample_mode == "polygon":
-            unfiltered_tx_offset = self._sample_polygon_offset(
-                tx2nuc_idx=unfiltered_tx2nuc_idx,
-                nuc2xy=nuc2xy,
-                nuc2cell_triangle_probs=nuc_batch.nuc2cell_triangle_probs,
-                nuc2cell_triangle_xy=nuc_batch.nuc2cell_triangle_xy,
-                nuc2cell_triangle_seqlens=nuc_batch.nuc2cell_triangle_seqlens,
-            )
-        else:
-            unfiltered_tx_offset = self._sample_isotropic_offsets(
-                ctype=unfiltered_tx_2_ctype, punch_idx=unfiltered_tx_2_punch_idx
-            )
+        unfiltered_tx_offset = self._sample_polygon_offset(
+            tx2nuc_idx=unfiltered_tx2nuc_idx,
+            nuc2xy=nuc2xy,
+            nuc2cell_triangle_probs=nuc_batch.nuc2cell_triangle_probs,
+            nuc2cell_triangle_xy=nuc_batch.nuc2cell_triangle_xy,
+            nuc2cell_triangle_seqlens=nuc_batch.nuc2cell_triangle_seqlens,
+        )
 
         ## Corrupt some number of tx per patch
         per_patch_corrupt_frac = self.max_noise_prob * torch.rand(B, device=device)
