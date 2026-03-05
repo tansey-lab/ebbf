@@ -12,9 +12,6 @@ data:
   min_tx_factor: 0.75
   max_tx_factor: 1.25
   oversample_tx_factor: 1.5
-  sample_mode: polygon
-  hist_mode: punch+ctype
-  corr_mode: punch
   max_nuc_dropout_prob: 0.2
   triangle_dirichlet_scale: 25.0
   max_cell_expansion_factor: 1.5

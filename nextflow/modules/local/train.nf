@@ -33,9 +33,6 @@ data:
   min_tx_factor: ${params.min_tx_factor}
   max_tx_factor: ${params.max_tx_factor}
   oversample_tx_factor: ${params.oversample_tx_factor}
-  sample_mode: ${params.sample_mode}
-  hist_mode: ${params.hist_mode}
-  corr_mode: ${params.corr_mode}
   max_nuc_dropout_prob: ${params.max_nuc_dropout_prob}
   triangle_dirichlet_scale: ${params.triangle_dirichlet_scale}
   max_cell_expansion_factor: ${params.max_cell_expansion_factor}

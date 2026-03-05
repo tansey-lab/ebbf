@@ -658,7 +658,6 @@ class STDataset:
             nuc2gene_probs=nuc2gene_probs,
             nuc2ctype=nuc2ctypes,
             nuc2cell_count=self.nuc_cell_counts,
-            punch_bounds=self.boxes,
             patch_size=patch_size,
             patch_padding=patch_padding,
             dataset_size=dataset_size,
