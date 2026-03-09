@@ -64,6 +64,26 @@
           }
         }
       },
+      "training_options": {
+        "title": "Training options",
+        "type": "object",
+        "fa_icon": "fas fa-graduation-cap",
+        "description": "Configure training parameters",
+        "properties": {
+          "wandb_enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable Weights & Biases logging",
+            "fa_icon": "fas fa-chart-line"
+          },
+          "wandb_api_key": {
+            "type": "string",
+            "description": "Weights & Biases API key for online logging",
+            "fa_icon": "fas fa-key",
+            "help_text": "If provided, enables online W&B logging. Get your key from https://wandb.ai/authorize"
+          }
+        }
+      },
       "generic_options": {
         "title": "Generic options",
         "type": "object",

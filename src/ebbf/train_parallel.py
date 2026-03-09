@@ -88,11 +88,19 @@ class Trainer:
 
         if is_main_process:
             if self.wandb_enabled:
-                wandb.login()
+                # Check if wandb API key is available; if not, run in offline mode
+                wandb_mode = "online"
+                if not torch.cuda.is_available():
+                    wandb_mode = "offline"
+                elif not os.environ.get("WANDB_API_KEY"):
+                    # No API key configured, use offline mode
+                    wandb_mode = "offline"
+                else:
+                    wandb.login()
                 self.run = wandb.init(
                     project="Transcript diffusion",
                     config=OmegaConf.to_container(config, resolve=True),
-                    mode="offline" if not torch.cuda.is_available() else "online",
+                    mode=wandb_mode,
                 )
 
             self.output_dir = config.output_folder
