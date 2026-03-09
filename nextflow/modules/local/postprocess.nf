@@ -7,17 +7,21 @@ process EBBF_POSTPROCESS {
 
     output:
     tuple val(meta), path("*.parquet"), emit: results
+    tuple val(meta), path("*.h5ad")   , emit: anndata
     path "versions.yml"               , emit: versions
 
     script:
     def args = task.ext.args ?: ''
     def prefix = task.ext.prefix ?: "${meta.id}"
+    def cd_cutoff = params.cd_cutoff ?: 2.0
     """
     ebbf-postprocess \\
         ${parquet_files} \\
         --tma ${tma_file} \\
         --cluster_distance ${params.cluster_distance} \\
         --output ${prefix}.parquet \\
+        --anndata_output ${prefix}.h5ad \\
+        --cd_cutoff ${cd_cutoff} \\
         --work_dir . \\
         ${args}
 

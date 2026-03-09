@@ -1,0 +1,33 @@
+name: Sync Pipeline to Cirro
+
+on:
+  workflow_run:
+    workflows: ["Build and Push Docker"]
+    types:
+      - completed
+    branches: [main]
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    # Only run if Docker build succeeded (for workflow_run trigger)
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Sync pipeline to Cirro
+        env:
+          CIRRO_REFRESH_TOKEN: ${{ secrets.CIRRO_REFRESH_TOKEN }}
+          CIRRO_BASE_URL: breakthroughcancer.cirro.bio
+          CIRRO_PROCESS_ID: ${{ vars.CIRRO_PROCESS_ID }}
+        run: uv run python scripts/sync_pipeline.py
