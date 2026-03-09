@@ -5,12 +5,14 @@ import os
 import shutil
 import uuid
 
+import anndata
 import numpy as np
+import pandas as pd
 import polars as pl
 import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
-from scipy.sparse import coo_array
+from scipy.sparse import coo_array, csr_matrix
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import KDTree
 from sklearn.cluster import DBSCAN
@@ -394,11 +396,79 @@ def map_clusters_to_cells(
 ###############
 
 
+###############
+### STEP 6 ###
+##############
+
+
+def create_anndata(
+    ef_tx_fname: str,
+    output_fname: str,
+    cd_cutoff: float = 2.0,
+):
+    """Create AnnData file from transcript assignment table.
+
+    Args:
+        ef_tx_fname: Path to the transcript assignment parquet file
+        output_fname: Path to output h5ad file
+        cd_cutoff: Centroid distance cutoff for filtering transcripts
+    """
+    flow_df = pl.scan_parquet(ef_tx_fname)
+
+    flow_df = flow_df.filter(
+        (pl.col("centroid_distance") < cd_cutoff)
+        & (pl.col("mahalanobis_distance") <= 1)
+    )
+    flow_df = flow_df.with_columns(pl.col("transcript_id").cast(pl.UInt64))
+
+    unique_cell_id = np.sort(
+        flow_df.select(pl.col("cell_id")).unique().collect().to_numpy()[:, 0]
+    )
+    unique_genes = np.sort(
+        flow_df.select(pl.col("feature_name")).unique().collect().to_numpy()[:, 0]
+    )
+    cell_id2idx = {x: i for i, x in enumerate(unique_cell_id)}
+    gene2idx = {x: i for i, x in enumerate(unique_genes)}
+    n_cells = unique_cell_id.shape[0]
+    n_genes = unique_genes.shape[0]
+
+    flow_df = flow_df.with_columns(
+        pl.col("cell_id").replace_strict(cell_id2idx).alias("cell_idx")
+    )
+    flow_df = flow_df.with_columns(
+        pl.col("feature_name").replace_strict(gene2idx).alias("gene_idx")
+    )
+
+    X = (
+        flow_df.group_by(["cell_idx", "gene_idx"])
+        .len(name="count")
+        .collect()
+        .to_pandas()
+    )
+    mat = csr_matrix(
+        (X["count"].values, (X["cell_idx"].values, X["gene_idx"].values)),
+        shape=(n_cells, n_genes),
+    )
+    var = pd.DataFrame(index=unique_genes)
+    obs = pd.DataFrame(index=unique_cell_id)
+
+    adata = anndata.AnnData(X=mat, var=var, obs=obs)
+    adata.write_h5ad(output_fname)
+
+    return adata
+
+
+###############
+###############
+
+
 def post_process(
     input_files: list[str],
     tma: STDataset,
     cluster_distance: float,
     output_fname: str = "ef.parquet",
+    anndata_fname: str | None = "ef.h5ad",
+    cd_cutoff: float = 2.0,
     work_dir: str = ".",
     n_workers: int | None = None,
 ):
@@ -466,6 +536,15 @@ def post_process(
 
     ## Remove fourth intermediate file
     remove(temp_path4)
+
+    ## Step 6: Create AnnData file
+    if anndata_fname is not None:
+        logger.info("Step 6: creating AnnData file...")
+        create_anndata(
+            ef_tx_fname=output_fname,
+            output_fname=anndata_fname,
+            cd_cutoff=cd_cutoff,
+        )
 
     logger.info("DONE!")
 

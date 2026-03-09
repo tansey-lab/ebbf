@@ -30,6 +30,18 @@ def main():
         help="Output file path (default: ef.parquet)",
     )
     parser.add_argument(
+        "--anndata_output",
+        type=str,
+        default="ef.h5ad",
+        help="Output AnnData file path (default: ef.h5ad).",
+    )
+    parser.add_argument(
+        "--cd_cutoff",
+        type=float,
+        default=2.0,
+        help="Centroid distance cutoff for AnnData filtering (default: 2.0)",
+    )
+    parser.add_argument(
         "--work_dir",
         type=str,
         default=".",
@@ -38,10 +50,13 @@ def main():
     args = parser.parse_args()
 
     tma = STDataset.load(args.tma)
+    anndata_fname = args.anndata_output if args.anndata_output else None
     post_process(
         input_files=args.input_files,
         work_dir=args.work_dir,
         tma=tma,
         cluster_distance=args.cluster_distance,
         output_fname=args.output,
+        anndata_fname=anndata_fname,
+        cd_cutoff=args.cd_cutoff,
     )
