@@ -14,6 +14,7 @@ process EBBF_TRAIN {
     def args = task.ext.args ?: ''
     def attn_res = params.attn_resolutions.tokenize(',').collect { it.trim() as int }
     def chan_mult = params.channel_mult.tokenize(',').collect { it.trim() as int }
+    def wandb_key = params.wandb_api_key ?: ''
     """
     mkdir -p model_output
 
@@ -84,6 +85,11 @@ infer:
   rtol: 1.0e-5
   device: ${params.infer_device}
 EOFCONFIG
+
+    # Set wandb API key if provided
+    if [ -n "${wandb_key}" ]; then
+        export WANDB_API_KEY="${wandb_key}"
+    fi
 
     ebbf-train --config train_config.yaml
 
