@@ -23,6 +23,7 @@ RUN pip install --no-cache-dir -e .
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV POLARS_SKIP_CPU_CHECK=1
+ENV TRITON_CACHE_DIR=/tmp/triton_cache
 
 # Switch back to non-root user
 USER 1001
