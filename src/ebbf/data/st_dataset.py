@@ -10,7 +10,6 @@ import polars as pl
 import pyarrow.dataset as ds
 import shapely
 from scipy.sparse import coo_array, csr_array
-from scipy.spatial import KDTree
 from shapely.geometry import Polygon
 from tqdm import tqdm
 
@@ -163,152 +162,26 @@ def _load_spatialdata(zarr_dir: str):
     return points_dataset, nucs_gdf, cells_gdf, column_mapping
 
 
-class EllipseLookup:
-    def __init__(self, S: np.ndarray, c: np.ndarray):
-        self.S = S
-        self.Q = np.linalg.inv(np.matmul(S, S.mT))
-        self.c = c
-
-        ## Build ellipse lookup structure
-        n_grid = 50
-
-        t = np.linspace(0.0, 2 * np.pi, n_grid, endpoint=False)
-        unit = np.stack([np.cos(t), np.sin(t)], axis=1)
-        ellipse_pts = c[:, np.newaxis, :] + np.einsum("bij, tj -> bti", S, unit)
-        nuc_idx = np.repeat(np.arange(c.shape[0])[:, np.newaxis], n_grid, axis=1)
-
-        ellipse_pts_flat = ellipse_pts.reshape((-1, 2))
-        self.nuc_idx_flat = nuc_idx.reshape((-1,))
-
-        self.nuc_ellipse_lookup = KDTree(ellipse_pts_flat)
-
-        ## Also build just regular nuc centroid lookup structure
-        self.centroid_lookup = KDTree(c)
-
-    def lookup(self, xy: np.ndarray, drop_zeros: bool = True):
-        n = xy.shape[0]
-
-        ## Check to see if we lie inside of any ellipses
-        centroid_dist, centroid_idx = self.centroid_lookup.query(xy, k=5)
-
-        d = xy[:, np.newaxis, :] - self.c[centroid_idx]
-
-        ellipse_condition = (
-            np.einsum("...i,...ij,...j->...", d, self.Q[centroid_idx], d) <= 1
-        )
-        inside_ellipse_mask1 = ellipse_condition.any(axis=-1)
-        inside_ellipse_idx1 = centroid_idx[
-            np.arange(n), np.argmax(ellipse_condition, axis=-1)
-        ]
-
-        ## Filter out the points that are inside the ellipse
-        # xy = xy[~inside_ellipse_mask1]
-
-        ## Get closest ellipse boundary
-        _, ellipse_pt_idx = self.nuc_ellipse_lookup.query(xy, k=1)
-        ellipse_pt_nuc_idx = self.nuc_idx_flat[ellipse_pt_idx]
-
-        diff_closest_nuc_centroid = xy - self.c[ellipse_pt_nuc_idx]
-        dist_to_closest_nuc_centroid = np.linalg.norm(
-            diff_closest_nuc_centroid, axis=-1
-        )
-        mahalanobis_distance_to_closest_nuc_centroid = np.sqrt(
-            np.einsum(
-                "...i,...ij,...j->...",
-                diff_closest_nuc_centroid,
-                self.Q[ellipse_pt_nuc_idx],
-                diff_closest_nuc_centroid,
-            )
-        )
-
-        ## We may have missed some points that are inside an ellipse
-        ## We'll just drop these
-        inside_ellipse_mask2 = mahalanobis_distance_to_closest_nuc_centroid <= 1.0
-        # ellipse_pt_nuc_idx = ellipse_pt_nuc_idx[~inside_ellipse_mask2]
-        # dist_to_closest_nuc_centroid = \
-        #     dist_to_closest_nuc_centroid[~inside_ellipse_mask2]
-        # mahalanobis_distance_to_closest_nuc_centroid = \
-        #     mahalanobis_distance_to_closest_nuc_centroid[~inside_ellipse_mask2]
-        ellipse_dist = dist_to_closest_nuc_centroid * (
-            1
-            - (
-                1.0
-                / np.clip(
-                    mahalanobis_distance_to_closest_nuc_centroid, a_min=1e-3, a_max=None
-                )
-            )
-        )
-
-        ## Overwrite these points
-        ellipse_pt_nuc_idx[inside_ellipse_mask1] = inside_ellipse_idx1[
-            inside_ellipse_mask1
-        ]
-        ellipse_dist[inside_ellipse_mask1 | inside_ellipse_mask2] = 0.0
-
-        if drop_zeros:
-            mask = ellipse_dist != 0
-            ellipse_pt_nuc_idx = ellipse_pt_nuc_idx[mask]
-            ellipse_dist = ellipse_dist[mask]
-
-        result = {
-            "closest_ellipse_cell_idx": ellipse_pt_nuc_idx,
-            "closest_ellipse_distance": ellipse_dist,
-            "nuc_centroid_idx": centroid_idx[:, 0],
-            "nuc_centroid_distance": centroid_dist[:, 0],
-        }
-
-        return result
-
-
 # --- Globals set once per worker ---
-_worker_lookup = None
 _gene2idx = None
 _cell_id2idx = None
 _n_nucs = None
 _n_genes = None
-_n_bins = None
-_max_dist = None
-_x_col = None
-_y_col = None
 
 
-def _init_worker(
-    S, c, gene2idx, cell_id2idx, n_nucs, n_genes, n_bins, max_dist, x_col, y_col
-):
+def _init_worker(gene2idx, cell_id2idx, n_nucs, n_genes):
     """Initializer, runs once per worker process."""
-    global \
-        _worker_lookup, \
-        _gene2idx, \
-        _cell_id2idx, \
-        _n_nucs, \
-        _n_genes, \
-        _n_bins, \
-        _max_dist, \
-        _x_col, \
-        _y_col
-    _worker_lookup = EllipseLookup(S, c)  # your custom class
+    global _gene2idx, _cell_id2idx, _n_nucs, _n_genes
     _gene2idx = gene2idx
     _cell_id2idx = cell_id2idx
     _n_nucs = n_nucs
     _n_genes = n_genes
-    _n_bins = n_bins
-    _max_dist = max_dist
-    _x_col = x_col
-    _y_col = y_col
-
-
-def _assign_to_bin(vals):
-    vals_clip = np.clip(vals, a_min=0, a_max=(_max_dist - 1e-5))
-    return np.floor(vals_clip * _n_bins / _max_dist).astype(int)
 
 
 def process_batch(batch):
     """Executed for each batch inside worker processes."""
-    global _worker_lookup, _gene2idx, _cell_id2idx, _n_nucs, _n_genes, _x_col, _y_col
+    global _gene2idx, _cell_id2idx, _n_nucs, _n_genes
 
-    ###########################
-    ### Nuclear gene counts ###
-    ###########################
     genes = np.array(batch["feature_name"], dtype=object)
     cell_id = np.array(batch["cell_id"], dtype=object)
 
@@ -331,53 +204,22 @@ def process_batch(batch):
         shape=(_n_nucs, _n_genes),
     )
 
-    ###########################
-    ### Histogram distances ###
-    ###########################
-    xy = np.array([batch[_x_col], batch[_y_col]]).T
-
-    res = _worker_lookup.lookup(
-        xy, drop_zeros=True
-    )  # expects dict with 'closest_ellipse_distance', etc.
-    ellipse_bins = _assign_to_bin(res["closest_ellipse_distance"])
-    centroid_bins = _assign_to_bin(res["nuc_centroid_distance"])
-
-    local_ellipse_hist = coo_array(
-        (np.ones_like(ellipse_bins), (res["closest_ellipse_cell_idx"], ellipse_bins)),
-        shape=(_n_nucs, _n_bins),
-    )
-    local_centroid_hist = coo_array(
-        (np.ones_like(centroid_bins), (res["nuc_centroid_idx"], centroid_bins)),
-        shape=(_n_nucs, _n_bins),
-    )
-
-    ### Where are we ###
-    num = xy.shape[0]
+    num = len(batch["feature_name"])
 
     return {
         "local_nuc_gene_counts": local_nuc_gene_counts.tocsr(),
-        "local_ellipse_hist": local_ellipse_hist.tocsr(),
-        "local_centroid_hist": local_centroid_hist.tocsr(),
         "num": num,
     }
 
 
-def _compute_histograms(
+def _compute_gene_counts(
     points_dataset: ds.Dataset,
-    S: np.ndarray,
-    c: np.ndarray,
     cell_id2idx: dict[str, int],
     gene2idx: dict[str, int],
-    column_mapping: dict[str, str],
-    n_bins: int = 100,
-    max_dist: int = 40,
     batch_size: int = 10_000_000,
     num_workers: int | None = None,
 ):
-
-    x_col = column_mapping["x"]
-    y_col = column_mapping["y"]
-
+    """Compute per-nucleus gene count matrix from transcript data."""
     n_rows = points_dataset.count_rows(filter=(ds.field("is_gene")))
 
     if num_workers is None:
@@ -391,8 +233,6 @@ def _compute_histograms(
         batches = points_dataset.to_batches(
             batch_size=batch_size,
             columns=[
-                x_col,
-                y_col,
                 "feature_name",
                 "is_gene",
                 "cell_id",
@@ -404,40 +244,18 @@ def _compute_histograms(
 
     # --- Main driver ---
     nuc_gene_counts = csr_array((n_nucs, n_genes), dtype=np.int64)
-    nuc_ellipsoid_hist = csr_array((n_nucs, n_bins), dtype=np.int64)
-    nuc_centroid_hist = csr_array((n_nucs, n_bins), dtype=np.int64)
 
     with cf.ProcessPoolExecutor(
         max_workers=num_workers,
         initializer=_init_worker,
-        initargs=(
-            S,
-            c,
-            gene2idx,
-            cell_id2idx,
-            n_nucs,
-            n_genes,
-            n_bins,
-            max_dist,
-            x_col,
-            y_col,
-        ),
+        initargs=(gene2idx, cell_id2idx, n_nucs, n_genes),
     ) as executor:
-        # map yields results in submission order, but tqdm tracks progress smoothly
         pbar = tqdm(total=n_rows)
         for res in executor.map(process_batch, batch_generator(), chunksize=1):
             nuc_gene_counts = nuc_gene_counts + res["local_nuc_gene_counts"]
-            nuc_ellipsoid_hist = nuc_ellipsoid_hist + res["local_ellipse_hist"]
-            nuc_centroid_hist = nuc_centroid_hist + res["local_centroid_hist"]
             pbar.update(res["num"])
 
-    results = {
-        "nuc_gene_counts": nuc_gene_counts,
-        "nuc_ellipsoid_hist": nuc_ellipsoid_hist,
-        "nuc_centroid_hist": nuc_centroid_hist,
-    }
-
-    return results
+    return nuc_gene_counts
 
 
 def _compute_boxes_from_bounds(
@@ -469,28 +287,6 @@ def _compute_boxes_from_bounds(
     return boxes
 
 
-def _estimate_per_box_distance_histograms(
-    nuc_hist: csr_array, nuc_xy: np.ndarray, boxes: np.ndarray
-) -> np.ndarray:
-    """Estimate distance histograms per box."""
-    n_bins = nuc_hist.shape[1]
-    n_boxes = boxes.shape[0]
-    # Shape: (n_boxes, 1, n_bins) - single dimension for compatibility
-    hist_array = np.zeros((n_boxes, 1, n_bins), dtype=int)
-
-    for i, box in enumerate(tqdm(boxes)):
-        box_mask = (
-            (nuc_xy[:, 0] > box[0])
-            & (nuc_xy[:, 1] > box[1])
-            & (nuc_xy[:, 0] < box[2])
-            & (nuc_xy[:, 1] < box[3])
-        )
-        nuc_hist_box = nuc_hist[box_mask]
-        hist_array[i, 0, :] = nuc_hist_box.sum(axis=0)
-
-    return hist_array
-
-
 def _compute_polygon_triangulation(polygons):
     all_triangles = shapely.constrained_delaunay_triangles(polygons)
 
@@ -512,8 +308,6 @@ def _compute_polygon_triangulation(polygons):
 
 def process_zarr(
     zarr_dir: str,
-    max_dist: float = 40,
-    n_bins: int = 100,
     box_width: float = 400,
     nuc_density_per_um2: float = 1e-5,
     input_format: str | None = None,
@@ -530,8 +324,6 @@ def process_zarr(
             - SpatialData zarr directory with points/transcripts/ and shapes/
             - Xenium Ranger output directory with transcripts.parquet,
               nucleus_boundaries.parquet, etc.
-        max_dist: Maximum distance for histogram binning
-        n_bins: Number of histogram bins
         box_width: Width of spatial tiles
         nuc_density_per_um2: Minimum nucleus density to keep a tile (default: 1e-5)
         input_format: Input format, either "spatialdata" or "xenium".
@@ -595,20 +387,13 @@ def process_zarr(
         if cid in cell_id2idx:
             nuc_cell_counts[cell_id2idx[cid]] = count
 
-    logger.info("Computing histograms/count matrices")
-    result = _compute_histograms(
+    logger.info("Computing gene count matrix")
+    nuc_gene_counts: csr_array = _compute_gene_counts(
         points_dataset,
-        S,
-        c,
         cell_id2idx,
         gene2idx,
-        column_mapping,
-        n_bins=n_bins,
-        max_dist=max_dist,
         num_workers=(num_workers // 2),
     )
-
-    nuc_gene_counts: csr_array = result["nuc_gene_counts"]
 
     ## Compute uniform grid of tiles from nucleus bounding box
     min_x, min_y = c.min(axis=0)
@@ -636,18 +421,6 @@ def process_zarr(
         nuc_density_per_um2,
     )
 
-    logger.info("Estimating distance histograms per box")
-
-    ## Centroid histograms
-    centroid_hist_array = _estimate_per_box_distance_histograms(
-        result["nuc_centroid_hist"], c, boxes
-    )
-
-    ## Ellipse histograms
-    ellipse_hist_array = _estimate_per_box_distance_histograms(
-        result["nuc_ellipsoid_hist"], c, boxes
-    )
-
     ## Finalize stats
     nuc_total_tx_counts = nuc_gene_counts.sum(axis=1)
     nuc_gene_counts: coo_array = nuc_gene_counts.tocoo()
@@ -657,9 +430,6 @@ def process_zarr(
 
     tma = STDataset(
         boxes=boxes,
-        centroid_hist_array=centroid_hist_array,
-        ellipse_hist_array=ellipse_hist_array,
-        max_dist=max_dist,
         nuc_cell_id=nuc_cell_id,
         nuc_total_tx_counts=nuc_total_tx_counts,
         nuc_ctype_idx=nuc_ctype_idx,
@@ -682,9 +452,6 @@ class STDataset:
     def __init__(
         self,
         boxes: np.ndarray,
-        centroid_hist_array: np.ndarray,
-        ellipse_hist_array: np.ndarray,
-        max_dist: float,
         nuc_cell_id: np.ndarray,
         nuc_total_tx_counts: np.ndarray,
         nuc_ctype_idx: np.ndarray,
@@ -702,9 +469,6 @@ class STDataset:
     ):
 
         self.boxes = boxes
-        self.centroid_hist_array = centroid_hist_array
-        self.ellipse_hist_array = ellipse_hist_array
-        self.max_dist = max_dist
         self.nuc_cell_id = nuc_cell_id
         self.nuc_total_tx_counts = nuc_total_tx_counts
         self.nuc_ctype_idx = nuc_ctype_idx
@@ -747,9 +511,7 @@ class STDataset:
                 converted[key] = val.astype(np.float32)
             else:
                 converted[key] = val
-        tma = cls(**converted)
-        tma.max_dist = res["max_dist"].item()
-        return tma
+        return cls(**converted)
 
     def get_nuc_dataset(
         self, patch_size: float, patch_padding: float, dataset_size: int, min_nucs: int
