@@ -341,8 +341,11 @@ if __name__ == "__main__":
         config = OmegaConf.merge(uconfig, config)
 
     world_size = torch.cuda.device_count()
-    if world_size > 0:
+    if world_size > 1:
         mp.spawn(main_distributed, args=(world_size, config), nprocs=world_size)
+    elif world_size == 1:
+        logger.info("Found 1 CUDA device, using single-GPU training...")
+        main_single(config, torch.device("cuda:0"))
     else:
         logger.info("No CUDA devices found, running on CPU...")
         main_single(config, torch.device("cpu"))
