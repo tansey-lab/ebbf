@@ -1,0 +1,41 @@
+name: ebbf
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  # Python version
+  - python>=3.12
+
+  # Core scientific computing
+  - numpy
+  - scipy
+  - pandas
+  - polars
+  - pyarrow
+  - scikit-learn
+
+  # PyTorch with CUDA (official pytorch channel)
+  - pytorch::pytorch
+  - pytorch::torchvision
+  - pytorch::torchaudio
+  - pytorch::pytorch-cuda=13.0
+
+  # Geospatial
+  - geopandas
+  - shapely
+  - rtree
+
+  # ML/data utilities
+  - tqdm
+  - einops
+  - omegaconf
+  - wandb
+  - anndata
+
+  # Pip-only packages
+  - pip
+  - pip:
+      - datasets # Hugging Face datasets
+      - torchdiffeq # ODE solvers for PyTorch
