@@ -40,13 +40,12 @@ echo "  Conda:  $CONDA_ENV"
 echo "  Samplesheet: $SAMPLESHEET"
 [[ -n "$WANDB_ARGS" ]] && echo "  W&B:    enabled"
 
-nextflow run "$PIPELINE_DIR" \
+nextflow -log "$OUTPUT_DIR/.nextflow.log" run "$PIPELINE_DIR" \
     -profile mskcc_iris,conda \
     --input "$SAMPLESHEET" \
     --outdir "$OUTPUT_DIR" \
     --conda_env_path "$CONDA_ENV" \
     $WANDB_ARGS \
-    -log "$OUTPUT_DIR/.nextflow.log" \
     -resume
 
 rm -f "$SAMPLESHEET"
