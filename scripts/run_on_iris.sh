@@ -46,6 +46,7 @@ nextflow run "$PIPELINE_DIR" \
     --outdir "$OUTPUT_DIR" \
     --conda_env_path "$CONDA_ENV" \
     $WANDB_ARGS \
+    -log "$OUTPUT_DIR/.nextflow.log" \
     -resume
 
 rm -f "$SAMPLESHEET"
