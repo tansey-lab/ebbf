@@ -3,6 +3,9 @@ process EBBF_TRAIN {
     label 'process_high'
     label 'process_gpu'
 
+    errorStrategy 'retry'
+    maxRetries 3
+
     input:
     tuple val(meta), path(tma)
 
@@ -12,11 +15,26 @@ process EBBF_TRAIN {
 
     script:
     def args = task.ext.args ?: ''
+    // Build resume command for retry attempts - finds latest checkpoint from previous attempt
+    def resume_cmd = ""
+    def prevWorkDir = task.previousAttempt?.workDir
+    if (task.attempt > 1 && prevWorkDir) {
+        resume_cmd = """
+        PREV_DIR="${prevWorkDir}"
+        LATEST_CKPT="\${PREV_DIR}/model_output/chkpoint.pt"
+        if [ -f "\$LATEST_CKPT" ]; then
+            RESUME_FLAG="--resume_from \$LATEST_CKPT"
+            echo "Resuming from \$LATEST_CKPT (attempt ${task.attempt})"
+        fi
+        """
+    }
     def attn_res = params.attn_resolutions.tokenize(',').collect { it.trim() as int }
     def chan_mult = params.channel_mult.tokenize(',').collect { it.trim() as int }
     def wandb_key = params.wandb_api_key ?: ''
     """
     mkdir -p model_output
+    RESUME_FLAG=""
+    ${resume_cmd}
 
     # Generate config from params
     cat > train_config.yaml << 'EOFCONFIG'
@@ -24,7 +42,6 @@ experiment_name: ${params.experiment_name}
 seed: ${params.seed}
 
 data:
-  sampler: empirical-bayes
   tma_fname: ${tma}
   patch_size: ${params.patch_size}
   patch_padding: ${params.patch_padding}
@@ -91,7 +108,7 @@ EOFCONFIG
         export WANDB_API_KEY="${wandb_key}"
     fi
 
-    ebbf-train --config train_config.yaml
+    ebbf-train --config train_config.yaml \$RESUME_FLAG
 
     cat <<-END_VERSIONS > versions.yml
 "${task.process}":

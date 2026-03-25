@@ -40,9 +40,7 @@ def samplesheet_from_files(ds: PreprocessDataset) -> pd.DataFrame:
     # Convert s3 link to PosixPath and derive parent; convert back into string
     # Path converts s3:// to s3:/, so revert proper s3 prefix afterwards
     files = files.copy()
-    files["zarr_dir"] = files["file"].apply(
-        lambda x: str(Path(x).parent).replace("s3:/", "s3://")
-    )
+    files["zarr_dir"] = files["file"].apply(lambda x: str(Path(x).parent).replace("s3:/", "s3://"))
     files = files[["sample", "zarr_dir"]]
 
     # Deduplicate - keep one row per sample
@@ -83,14 +81,11 @@ def prepare_samplesheet(ds: PreprocessDataset) -> pd.DataFrame:
 
     # Check if pipeline uses Cirro samplesheet, and if not prepare it from params
     if samplesheet.empty:
-        ds.logger.warning(
-            "No files found in dataset. Preparing samplesheet from params."
-        )
+        ds.logger.warning("No files found in dataset. Preparing samplesheet from params.")
         samplesheet = samplesheet_from_params(ds)
         if samplesheet.empty:
             raise ValueError(
-                "No files found in dataset and unable to prepare "
-                "samplesheet from params."
+                "No files found in dataset and unable to prepare samplesheet from params."
             )
         ds.logger.info("Prepared samplesheet from params.")
 
@@ -98,8 +93,7 @@ def prepare_samplesheet(ds: PreprocessDataset) -> pd.DataFrame:
     for colname in SAMPLESHEET_REQUIRED_COLUMNS:
         if colname not in samplesheet.columns:
             ds.logger.warning(
-                f"Samplesheet is missing required column '{colname}'."
-                " Populating with NaN."
+                f"Samplesheet is missing required column '{colname}'. Populating with NaN."
             )
             samplesheet[colname] = np.nan
 
@@ -112,8 +106,7 @@ def prepare_samplesheet(ds: PreprocessDataset) -> pd.DataFrame:
     for k in ds.params:
         if k in SAMPLESHEET_REQUIRED_COLUMNS:
             ds.logger.info(
-                f"Removing param '{k}' from dataset params"
-                " as it is now in the samplesheet."
+                f"Removing param '{k}' from dataset params as it is now in the samplesheet."
             )
             to_remove.append(k)
 

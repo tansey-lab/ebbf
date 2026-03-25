@@ -67,18 +67,14 @@ class FlowInference:
                     gene_idx=batch["tx_gene_idx"],
                     t=torch.atleast_1d(t),
                     tx_seqlens=batch["tx_seqlens"],
-                    nuc_seqlens=(
-                        batch["nuc_seqlens"] if "nuc_seqlens" in batch else None
-                    ),
+                    nuc_seqlens=(batch["nuc_seqlens"] if "nuc_seqlens" in batch else None),
                     nuc_ellipse_pos=(
                         batch["nuc_ellipse_coordinates"]
                         if "nuc_ellipse_coordinates" in batch
                         else None
                     ),
                     nuc_ellipse_seqlens=(
-                        batch["nuc_ellipse_seqlens"]
-                        if "nuc_ellipse_seqlens" in batch
-                        else None
+                        batch["nuc_ellipse_seqlens"] if "nuc_ellipse_seqlens" in batch else None
                     ),
                     nuc_ctypes=(batch["nuc_ctype"] if "nuc_ctype" in batch else None),
                 )
@@ -98,9 +94,7 @@ class FlowInference:
             )
 
             ## Scale back to the original coordinates
-            tx_pos: torch.Tensor = (0.5 * self.patch_size * x) + patch_center.unsqueeze(
-                0
-            )
+            tx_pos: torch.Tensor = (0.5 * self.patch_size * x) + patch_center.unsqueeze(0)
 
             ## Record initial distance to patch center
             dist = torch.sum(torch.square(tx_pos[0] - patch_center), dim=-1)
@@ -130,9 +124,7 @@ def infer(
         patch_center = torch.repeat_interleave(
             batch["patch_center"], repeats=batch["tx_seqlens"], dim=0
         )
-        tx_initial_pos = (
-            0.5 * flow_inference.patch_size * batch["tx_xy"]
-        ) + patch_center
+        tx_initial_pos = (0.5 * flow_inference.patch_size * batch["tx_xy"]) + patch_center
         for ii, xy_final, d, gene_idx, xy_initial in zip(
             tx_idx.cpu().tolist(),
             tx_pos.cpu().tolist(),
@@ -219,9 +211,7 @@ if __name__ == "__main__":
 
     ## Load in the model
     logger.info(f"Loading model from {os.path.join(model_directory, 'chkpoint.pt')}")
-    state_dict = torch.load(
-        os.path.join(model_directory, "chkpoint.pt"), map_location="cpu"
-    )
+    state_dict = torch.load(os.path.join(model_directory, "chkpoint.pt"), map_location="cpu")
     model = instantiate_model(config)
     model.train(False)
     model.load_state_dict(state_dict["model"])

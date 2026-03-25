@@ -30,10 +30,7 @@ def get_dtype(nested_list):
 class RTree:
     def __init__(self, xy: np.ndarray, **kwargs):
         self._keys = list(kwargs.keys())
-        args = [
-            arg.tolist() if hasattr(arg, "tolist") else list(arg)
-            for arg in kwargs.values()
-        ]
+        args = [arg.tolist() if hasattr(arg, "tolist") else list(arg) for arg in kwargs.values()]
         self._dtypes = [get_dtype(arg) for arg in args]
 
         if len(args) == 0:
@@ -72,9 +69,7 @@ class RTree:
         bounds = (xmin, ymin, xmax, ymax)
 
         if only_index:
-            indices = torch.tensor(
-                list(self.index_table.intersection(bounds)), dtype=torch.int64
-            )
+            indices = torch.tensor(list(self.index_table.intersection(bounds)), dtype=torch.int64)
             return indices
         else:
             try:
@@ -121,9 +116,7 @@ class TorchCSR:
 
         # 3. Build a flat “span ID” array of length T:
         #    for each span i, repeat i exactly lengths[i] times
-        span_ids = torch.repeat_interleave(
-            torch.arange(len(lengths), device=idx.device), lengths
-        )
+        span_ids = torch.repeat_interleave(torch.arange(len(lengths), device=idx.device), lengths)
 
         # 4. Build a flat “pos_in_span” array of length T:
         #    for each span i, positions 0..lengths[i]-1
@@ -149,18 +142,15 @@ class TensorSequence:
         self.data: dict[str, torch.Tensor] = {k: v for k, v in kwargs.items()}
 
     def get(self, i: int):
-        result = {
-            k: v[self.cu_seqlens[i] : self.cu_seqlens[i + 1]]
-            for k, v in self.data.items()
-        }
+        result = {k: v[self.cu_seqlens[i] : self.cu_seqlens[i + 1]] for k, v in self.data.items()}
         return result
 
     def slice(self, idx: torch.Tensor):
         starts = self.cu_seqlens[idx]
         lengths = self.seqlens[idx]
-        rel_idx = torch.arange(
-            lengths.sum(), device=idx.device
-        ) - torch.repeat_interleave(lengths.cumsum(0) - lengths, lengths)
+        rel_idx = torch.arange(lengths.sum(), device=idx.device) - torch.repeat_interleave(
+            lengths.cumsum(0) - lengths, lengths
+        )
         flat_idx = torch.repeat_interleave(starts, lengths) + rel_idx
         result = {}
         for k, v in self.data.items():
@@ -224,18 +214,14 @@ if TRITON_AVAILABLE:
             running = tl.load(out_ptr + start + block_idx * BLOCK_SIZE + last_off)
 
 
-def segmented_cumsum_cuda(
-    data: torch.Tensor, cu_seqlens: torch.Tensor, block_size: int = 1024
-):
+def segmented_cumsum_cuda(data: torch.Tensor, cu_seqlens: torch.Tensor, block_size: int = 1024):
     """
     data:      (N,)  float32 on CUDA
     cu_seqlens:(S+1,) int64 on CUDA
     returns   (N,)  float32 on CUDA where each segment is cumulatively summed in-place
     """
     if not TRITON_AVAILABLE:
-        raise ImportError(
-            "triton is required for CUDA segmented_cumsum but is not installed"
-        )
+        raise ImportError("triton is required for CUDA segmented_cumsum but is not installed")
     assert data.is_cuda and cu_seqlens.is_cuda
     data.numel()
     S = cu_seqlens.numel() - 1
@@ -317,9 +303,7 @@ def approximate_ellipse(polys: gpd.array.GeometryArray):
     return (S, R, D, c)
 
 
-def rect_grid_indices(
-    c: torch.Tensor, w: torch.Tensor, h: torch.Tensor, L: float, M: int
-):
+def rect_grid_indices(c: torch.Tensor, w: torch.Tensor, h: torch.Tensor, L: float, M: int):
     """
     c: (n,2) centers
     w,h: (n,) half-width/height

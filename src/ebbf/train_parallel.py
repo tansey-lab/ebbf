@@ -13,6 +13,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from ebbf.config import EBBFConfig
 from ebbf.data.data import instantiate_train_dataloader, instantiate_transcript_sampler
 from ebbf.data.patch import NuclearBatch
 from ebbf.model.model import instantiate_model
@@ -47,7 +48,7 @@ def ddp_setup(rank, world_size):
 class Trainer:
     def __init__(
         self,
-        config: OmegaConf,
+        config: EBBFConfig,
         model: torch.nn.Module,
         train_dataloader: DataLoader,
         optimizer: torch.optim.Optimizer,
@@ -62,9 +63,7 @@ class Trainer:
 
         model = model.to(device)
         if is_distributed:
-            self.model = DDP(
-                model, device_ids=[device.index], find_unused_parameters=True
-            )
+            self.model = DDP(model, device_ids=[device.index], find_unused_parameters=True)
         else:
             self.model = model
 
@@ -84,7 +83,7 @@ class Trainer:
         self.use_ema: bool = config.train.use_ema
         self.ema_warmup_epochs: int = config.train.ema_warmup_epochs
         self.save_freq: int = config.train.save_freq
-        self.wandb_enabled: bool = config.train.get("wandb_enabled", True)
+        self.wandb_enabled: bool = config.train.wandb_enabled
 
         if is_main_process:
             if self.wandb_enabled:
@@ -147,18 +146,14 @@ class Trainer:
             gene_idx=tx_batch["tx_gene_idx"],
             t=tx_batch["t"],
             tx_seqlens=tx_batch["tx_seqlens"],
-            nuc_seqlens=(
-                tx_batch["nuc_seqlens"] if "nuc_seqlens" in tx_batch else None
-            ),
+            nuc_seqlens=(tx_batch["nuc_seqlens"] if "nuc_seqlens" in tx_batch else None),
             nuc_ellipse_pos=(
                 tx_batch["nuc2ellipse_coordinates"]
                 if "nuc2ellipse_coordinates" in tx_batch
                 else None
             ),
             nuc_ellipse_seqlens=(
-                tx_batch["nuc2ellipse_seqlens"]
-                if "nuc2ellipse_seqlens" in tx_batch
-                else None
+                tx_batch["nuc2ellipse_seqlens"] if "nuc2ellipse_seqlens" in tx_batch else None
             ),
             nuc_ctypes=(tx_batch["nuc2ctype"] if "nuc2ctype" in tx_batch else None),
         )
@@ -180,9 +175,7 @@ class Trainer:
             self.optimizer.step()
             self.optimizer.zero_grad()
             if self.use_ema:
-                self._get_model_module().update_ema(
-                    overwrite=(epoch < self.ema_warmup_epochs)
-                )
+                self._get_model_module().update_ema(overwrite=(epoch < self.ema_warmup_epochs))
         else:
             if self.is_distributed:
                 with self.model.no_sync():  ## No need to sync when we don't take a step
@@ -232,15 +225,15 @@ class Trainer:
         }
         torch.save(to_save, os.path.join(self.output_dir, "chkpoint.pt"))
 
-    def train(self):
+    def train(self, start_epoch: int = 0):
         if self.is_main_process:
             logger.info(
-                f"Starting training: {self.n_epochs} epochs, "
+                f"Starting training: {self.n_epochs} epochs (from epoch {start_epoch}), "
                 f"{len(self.train_dataloader)} batches/epoch"
             )
             logger.info("Waiting for first batch from DataLoader workers...")
 
-        for epoch in range(self.n_epochs):
+        for epoch in range(start_epoch, self.n_epochs):
             self._run_epoch(epoch)
             if self.is_main_process and (epoch % self.save_freq == 0):
                 self._save_checkpoint(epoch)
@@ -249,10 +242,10 @@ class Trainer:
             self._save_checkpoint(self.n_epochs - 1)
 
 
-def main_distributed(rank: int, world_size: int, config: OmegaConf):
+def main_distributed(rank: int, world_size: int, config: EBBFConfig):
     """Distributed training entry point (multi-GPU)."""
     ddp_setup(rank, world_size)
-    num_workers = config.train.num_workers if "num_workers" in config.train else 4
+    num_workers = config.train.num_workers
     dataloader = instantiate_train_dataloader(
         config,
         distributed=True,
@@ -269,6 +262,20 @@ def main_distributed(rank: int, world_size: int, config: OmegaConf):
         betas=(config.optim.beta1, config.optim.beta2),
         eps=config.optim.eps,
     )
+
+    # Restore optimizer state and get start epoch if resuming from checkpoint
+    start_epoch = 0
+    if config.get("model_initialization"):
+        ckpt = torch.load(config.model_initialization, map_location="cpu")
+        if "optimizer" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer"])
+            if rank == 0:
+                logger.info("Restored optimizer state from checkpoint")
+        if "epoch" in ckpt:
+            start_epoch = ckpt["epoch"] + 1
+            if rank == 0:
+                logger.info(f"Resuming from epoch {start_epoch}")
+
     trainer = Trainer(
         config=config,
         model=model,
@@ -278,26 +285,19 @@ def main_distributed(rank: int, world_size: int, config: OmegaConf):
         is_distributed=True,
         is_main_process=(rank == 0),
     )
-    trainer.train()
+    trainer.train(start_epoch=start_epoch)
     destroy_process_group()
 
 
-def main_single(config: OmegaConf, device: torch.device):
+def main_single(config: EBBFConfig, device: torch.device):
     """Single-process training entry point (CPU or single GPU)."""
-    from ebbf.compat import get_num_cpus
-
-    if "num_workers" in config.train:
-        num_workers = config.train.num_workers
-    else:
-        num_workers = min(4, get_num_cpus())
+    num_workers = config.train.num_workers
 
     logger.info(
         f"Initializing DataLoader with {num_workers} workers, "
         f"max_tx={config.data.max_tx}, dataset_size={config.data.dataset_size}"
     )
-    dataloader = instantiate_train_dataloader(
-        config, distributed=False, num_workers=num_workers
-    )
+    dataloader = instantiate_train_dataloader(config, distributed=False, num_workers=num_workers)
     logger.info("DataLoader initialized, workers starting to prefetch batches...")
 
     model = instantiate_model(config)
@@ -308,6 +308,18 @@ def main_single(config: OmegaConf, device: torch.device):
         betas=(config.optim.beta1, config.optim.beta2),
         eps=config.optim.eps,
     )
+
+    # Restore optimizer state and get start epoch if resuming from checkpoint
+    start_epoch = 0
+    if config.get("model_initialization"):
+        ckpt = torch.load(config.model_initialization, map_location="cpu")
+        if "optimizer" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer"])
+            logger.info("Restored optimizer state from checkpoint")
+        if "epoch" in ckpt:
+            start_epoch = ckpt["epoch"] + 1
+            logger.info(f"Resuming from epoch {start_epoch}")
+
     trainer = Trainer(
         config=config,
         model=model,
@@ -317,7 +329,7 @@ def main_single(config: OmegaConf, device: torch.device):
         is_distributed=False,
         is_main_process=True,
     )
-    trainer.train()
+    trainer.train(start_epoch=start_epoch)
 
 
 # Keep old name for backwards compatibility
@@ -331,9 +343,12 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, help="Config filename.")
     args = parser.parse_args()
 
-    config = OmegaConf.load(args.config)
+    # Load YAML and merge with structured config schema for validation
+    schema = OmegaConf.structured(EBBFConfig)
+    yaml_config = OmegaConf.load(args.config)
+    config = OmegaConf.merge(schema, yaml_config)
 
-    if "prev_model_folder" in config:
+    if config.get("prev_model_folder"):
         prev_model_folder = config.prev_model_folder
         uconfig = OmegaConf.load(os.path.join(prev_model_folder, "config.yaml"))
         uconfig.model_initialization = os.path.join(prev_model_folder, "chkpoint.pt")

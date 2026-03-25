@@ -36,23 +36,17 @@ if __name__ == "__main__":
     cell_fname = os.path.join(cell_folder, "shapes.parquet")
 
     # Convert nucleus boundaries
-    ndf = pd.read_csv(
-        os.path.join(xenium_folder, "segmentation_mask/nucleus_boundaries.csv")
-    )
+    ndf = pd.read_csv(os.path.join(xenium_folder, "segmentation_mask/nucleus_boundaries.csv"))
     nuc_df = compute_polygons(ndf)
     nuc_df.to_parquet(nucs_fname)
 
     # Convert cell boundaries
-    cdf = pd.read_csv(
-        os.path.join(xenium_folder, "segmentation_mask/cell_boundaries.csv")
-    )
+    cdf = pd.read_csv(os.path.join(xenium_folder, "segmentation_mask/cell_boundaries.csv"))
     cell_df = compute_polygons(cdf)
     cell_df.to_parquet(cell_fname)
 
     # Convert transcripts
-    tx_df = pl.scan_parquet(
-        os.path.join(xenium_folder, "transcripts/transcripts.parquet")
-    )
+    tx_df = pl.scan_parquet(os.path.join(xenium_folder, "transcripts/transcripts.parquet"))
     tx_df = tx_df.rename({"x_location": "x", "y_location": "y", "z_location": "z"})
     tx_df.sink_parquet(points_fname)
 
