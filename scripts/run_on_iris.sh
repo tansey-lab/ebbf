@@ -17,7 +17,7 @@ fi
 
 INPUT_DIR="$1"
 OUTPUT_DIR="$2"
-CONDA_ENV="${3:-/home/quinnj2/.conda/ebbf}"
+CONDA_ENV="${3}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PIPELINE_DIR="$(dirname "$SCRIPT_DIR")/nextflow"
@@ -41,6 +41,7 @@ echo "  Samplesheet: $SAMPLESHEET"
 [[ -n "$WANDB_ARGS" ]] && echo "  W&B:    enabled"
 
 nextflow -log "$OUTPUT_DIR/.nextflow.log" run "$PIPELINE_DIR" \
+    -w "$OUTPUT_DIR/nf" \
     -profile mskcc_iris,conda \
     --input "$SAMPLESHEET" \
     --outdir "$OUTPUT_DIR" \
