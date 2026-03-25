@@ -265,7 +265,7 @@ def main_distributed(rank: int, world_size: int, config: EBBFConfig):
 
     # Restore optimizer state and get start epoch if resuming from checkpoint
     start_epoch = 0
-    if "model_initialization" in config:
+    if config.get("model_initialization"):
         ckpt = torch.load(config.model_initialization, map_location="cpu")
         if "optimizer" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer"])
@@ -311,7 +311,7 @@ def main_single(config: EBBFConfig, device: torch.device):
 
     # Restore optimizer state and get start epoch if resuming from checkpoint
     start_epoch = 0
-    if "model_initialization" in config:
+    if config.get("model_initialization"):
         ckpt = torch.load(config.model_initialization, map_location="cpu")
         if "optimizer" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer"])
@@ -348,7 +348,7 @@ if __name__ == "__main__":
     yaml_config = OmegaConf.load(args.config)
     config = OmegaConf.merge(schema, yaml_config)
 
-    if "prev_model_folder" in config:
+    if config.get("prev_model_folder"):
         prev_model_folder = config.prev_model_folder
         uconfig = OmegaConf.load(os.path.join(prev_model_folder, "config.yaml"))
         uconfig.model_initialization = os.path.join(prev_model_folder, "chkpoint.pt")

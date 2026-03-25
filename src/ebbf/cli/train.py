@@ -46,7 +46,7 @@ def main():
     if args.resume_from is not None:
         config.model_initialization = args.resume_from
 
-    if "prev_model_folder" in config:
+    if config.get("prev_model_folder"):
         prev_model_folder = config.prev_model_folder
         uconfig = OmegaConf.load(os.path.join(prev_model_folder, "config.yaml"))
         uconfig.model_initialization = os.path.join(prev_model_folder, "chkpoint.pt")

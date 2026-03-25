@@ -17,9 +17,10 @@ process EBBF_TRAIN {
     def args = task.ext.args ?: ''
     // Build resume command for retry attempts - finds latest checkpoint from previous attempt
     def resume_cmd = ""
-    if (task.attempt > 1) {
+    def prevWorkDir = task.previousAttempt?.workDir
+    if (task.attempt > 1 && prevWorkDir) {
         resume_cmd = """
-        PREV_DIR="${task.previousAttempt.workDir}"
+        PREV_DIR="${prevWorkDir}"
         LATEST_CKPT="\${PREV_DIR}/model_output/chkpoint.pt"
         if [ -f "\$LATEST_CKPT" ]; then
             RESUME_FLAG="--resume_from \$LATEST_CKPT"
@@ -41,7 +42,6 @@ experiment_name: ${params.experiment_name}
 seed: ${params.seed}
 
 data:
-  sampler: empirical-bayes
   tma_fname: ${tma}
   patch_size: ${params.patch_size}
   patch_padding: ${params.patch_padding}

@@ -49,9 +49,7 @@ class GridEncoder(nn.Module):
         flat_idx = i * M + j  # shape: (S,)
 
         # build batch index per element using
-        batch_idx = torch.arange(B, device=device, dtype=torch.long).repeat_interleave(
-            seqlens
-        )
+        batch_idx = torch.arange(B, device=device, dtype=torch.long).repeat_interleave(seqlens)
 
         # make global index across batches to scatter into single flattened axis
         global_flat_idx = batch_idx * (M * M) + flat_idx  # shape: (S,)
@@ -216,12 +214,7 @@ class GridDecoder(nn.Module):
         v11 = gather(ix1, iy1)
 
         # bilinear interpolation
-        out = (
-            (1 - wx) * (1 - wy) * v00
-            + wx * (1 - wy) * v10
-            + (1 - wx) * wy * v01
-            + wx * wy * v11
-        )
+        out = (1 - wx) * (1 - wy) * v00 + wx * (1 - wy) * v10 + (1 - wx) * wy * v01 + wx * wy * v11
         return out
 
     def forward(
@@ -257,9 +250,7 @@ class TxFlowUNet(nn.Module):
         self.out_channels = config.model.out_channels
 
         self.config = config
-        self.padding_bound: float = 1.0 + (
-            2.0 * config.data.patch_padding / config.data.patch_size
-        )
+        self.padding_bound: float = 1.0 + (2.0 * config.data.patch_padding / config.data.patch_size)
         self.img_resolution: int = config.model.img_resolution
 
         self.unet = DhariwalUNet(config)
@@ -284,7 +275,7 @@ class TxFlowUNet(nn.Module):
             img_resolution=self.img_resolution,
             img_range=self.padding_bound,
             n_channels=tx_in_channels,
-            splat=(("splat" in config.model) and config.model.splat),
+            splat=config.model.get("splat", False),
         )
 
         self.tx_grid_decoder = GridDecoder(
@@ -292,7 +283,7 @@ class TxFlowUNet(nn.Module):
             img_resolution=self.img_resolution,
             img_range=self.padding_bound,
             n_channels=(self.out_channels // 2),
-            splat=(("splat" in config.model) and config.model.splat),
+            splat=config.model.get("splat", False),
         )
 
         self.eps = 1e-4
@@ -310,9 +301,7 @@ class TxFlowUNet(nn.Module):
     ):  ## B
 
         ## Convert to an image (B x in_channels x K x K)
-        xy = tx_pos.clamp(
-            min=(self.eps - self.padding_bound), max=(self.padding_bound - self.eps)
-        )
+        xy = tx_pos.clamp(min=(self.eps - self.padding_bound), max=(self.padding_bound - self.eps))
         x = self.tx_grid_encoder(xy=xy, items=gene_idx, seqlens=tx_seqlens)
 
         if self.nuc_condition:
@@ -325,9 +314,7 @@ class TxFlowUNet(nn.Module):
             nuc_ctypes = torch.clamp(nuc_ctypes, max=self.n_ctypes)
 
             ## Repeat each cell type the appropriate number of ellipse-grid times
-            nuc_ctypes_rep = torch.repeat_interleave(
-                nuc_ctypes, nuc_ellipse_seqlens
-            )  ## E
+            nuc_ctypes_rep = torch.repeat_interleave(nuc_ctypes, nuc_ellipse_seqlens)  ## E
 
             ## Convert to an image (B x in_channels x K x K)
             nuc_x = self.nuc_ellipse_encoder(
