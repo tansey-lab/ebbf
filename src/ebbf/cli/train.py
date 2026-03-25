@@ -8,6 +8,7 @@ import torch
 import torch.multiprocessing as mp
 from omegaconf import OmegaConf
 
+from ebbf.config import EBBFConfig
 from ebbf.train_parallel import main_distributed, main_single
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,10 @@ def main():
     )
     args = parser.parse_args()
 
-    config = OmegaConf.load(args.config)
+    # Load YAML and merge with structured config schema for validation
+    schema = OmegaConf.structured(EBBFConfig)
+    yaml_config = OmegaConf.load(args.config)
+    config = OmegaConf.merge(schema, yaml_config)
 
     # Override output_folder if provided via CLI
     if args.output_dir is not None:

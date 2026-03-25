@@ -1,11 +1,11 @@
 import torch
-from omegaconf import OmegaConf
 
+from ebbf.config import EBBFConfig
 from ebbf.model.ema import EMA
 from ebbf.model.flownet import TxFlowUNet
 
 
-def instantiate_model(config: OmegaConf):
+def instantiate_model(config: EBBFConfig):
     model = TxFlowUNet(config)
 
     if config.train.use_ema:

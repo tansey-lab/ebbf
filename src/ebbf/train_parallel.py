@@ -13,6 +13,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from ebbf.config import EBBFConfig
 from ebbf.data.data import instantiate_train_dataloader, instantiate_transcript_sampler
 from ebbf.data.patch import NuclearBatch
 from ebbf.model.model import instantiate_model
@@ -47,7 +48,7 @@ def ddp_setup(rank, world_size):
 class Trainer:
     def __init__(
         self,
-        config: OmegaConf,
+        config: EBBFConfig,
         model: torch.nn.Module,
         train_dataloader: DataLoader,
         optimizer: torch.optim.Optimizer,
@@ -82,7 +83,7 @@ class Trainer:
         self.use_ema: bool = config.train.use_ema
         self.ema_warmup_epochs: int = config.train.ema_warmup_epochs
         self.save_freq: int = config.train.save_freq
-        self.wandb_enabled: bool = config.train.get("wandb_enabled", True)
+        self.wandb_enabled: bool = config.train.wandb_enabled
 
         if is_main_process:
             if self.wandb_enabled:
@@ -241,10 +242,10 @@ class Trainer:
             self._save_checkpoint(self.n_epochs - 1)
 
 
-def main_distributed(rank: int, world_size: int, config: OmegaConf):
+def main_distributed(rank: int, world_size: int, config: EBBFConfig):
     """Distributed training entry point (multi-GPU)."""
     ddp_setup(rank, world_size)
-    num_workers = config.train.num_workers if "num_workers" in config.train else 4
+    num_workers = config.train.num_workers
     dataloader = instantiate_train_dataloader(
         config,
         distributed=True,
@@ -288,14 +289,9 @@ def main_distributed(rank: int, world_size: int, config: OmegaConf):
     destroy_process_group()
 
 
-def main_single(config: OmegaConf, device: torch.device):
+def main_single(config: EBBFConfig, device: torch.device):
     """Single-process training entry point (CPU or single GPU)."""
-    from ebbf.compat import get_num_cpus
-
-    if "num_workers" in config.train:
-        num_workers = config.train.num_workers
-    else:
-        num_workers = min(4, get_num_cpus())
+    num_workers = config.train.num_workers
 
     logger.info(
         f"Initializing DataLoader with {num_workers} workers, "
@@ -347,7 +343,10 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, help="Config filename.")
     args = parser.parse_args()
 
-    config = OmegaConf.load(args.config)
+    # Load YAML and merge with structured config schema for validation
+    schema = OmegaConf.structured(EBBFConfig)
+    yaml_config = OmegaConf.load(args.config)
+    config = OmegaConf.merge(schema, yaml_config)
 
     if "prev_model_folder" in config:
         prev_model_folder = config.prev_model_folder
