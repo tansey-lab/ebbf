@@ -43,9 +43,7 @@ class NuclearPatchDataset(Dataset):
         self.nuc2ctype = torch.from_numpy(nuc2ctype).long()
         self.nuc2xy = torch.from_numpy(nuc2xy).float()
         self.nuc2ellipse_mat = (
-            torch.from_numpy(nuc2ellipse_mat).float()
-            if nuc2ellipse_mat is not None
-            else None
+            torch.from_numpy(nuc2ellipse_mat).float() if nuc2ellipse_mat is not None else None
         )
         # Store raw numpy array for lazy RTree initialization
         # (RTree uses C extension that doesn't survive fork())
@@ -102,9 +100,7 @@ class NuclearPatchDataset(Dataset):
 
             ## Sample the center of the patch within data bounds
             patch_center = torch.rand(1, 2)
-            patch_center = (
-                self.data_max - self.data_min
-            ) * patch_center + self.data_min
+            patch_center = (self.data_max - self.data_min) * patch_center + self.data_min
 
             idx = self.rtree.lookup_center_radius(
                 x_center=patch_center[0, 0].item(),
@@ -164,23 +160,15 @@ def nuclear_patch_collate_fn(batch: tuple[dict[str, torch.Tensor]]):
         nuc_idx=torch.concat([x["nuc_idx"] for x in batch], dim=0),
         nuc2xy=torch.concat([x["nuc2xy"] for x in batch], dim=0),
         nuc2ctype=torch.concat([x["nuc2ctype"] for x in batch], dim=0),
-        nuc2total_gene_count=torch.concat(
-            [x["nuc2total_gene_count"] for x in batch], dim=0
-        ),
+        nuc2total_gene_count=torch.concat([x["nuc2total_gene_count"] for x in batch], dim=0),
         nuc2cell_count=torch.concat([x["nuc2cell_count"] for x in batch], dim=0),
         nuc2genes_idx_seq=torch.concat([x["nuc2genes_idx_seq"] for x in batch], dim=0),
-        nuc2genes_probs_seq=torch.concat(
-            [x["nuc2genes_probs_seq"] for x in batch], dim=0
-        ),
+        nuc2genes_probs_seq=torch.concat([x["nuc2genes_probs_seq"] for x in batch], dim=0),
         nuc2ellipse_mat=torch.concat([x["nuc2ellipse_mat"] for x in batch], dim=0),
         nuc2genes_seqlens=torch.concat([x["nuc2genes_seqlens"] for x in batch], dim=0),
         nuc_seqlens=torch.tensor([x["nuc2xy"].shape[0] for x in batch]),
-        nuc2cell_triangle_xy=torch.concat(
-            [x["nuc2cell_triangle_xy"] for x in batch], dim=0
-        ),
-        nuc2cell_triangle_probs=torch.concat(
-            [x["nuc2cell_triangle_probs"] for x in batch], dim=0
-        ),
+        nuc2cell_triangle_xy=torch.concat([x["nuc2cell_triangle_xy"] for x in batch], dim=0),
+        nuc2cell_triangle_probs=torch.concat([x["nuc2cell_triangle_probs"] for x in batch], dim=0),
         nuc2cell_triangle_seqlens=torch.concat(
             [x["nuc2cell_triangle_seqlens"] for x in batch], dim=0
         ),
@@ -202,6 +190,8 @@ class TxPatchDataset(IterableDataset):
         shuffle: bool = False,
         nuc_ellipse_mat: np.ndarray | None = None,
         nuc_ctype: np.ndarray | None = None,
+        x_col: str = "x",
+        y_col: str = "y",
     ):
 
         self.boxes = boxes
@@ -214,6 +204,8 @@ class TxPatchDataset(IterableDataset):
         self.shuffle = shuffle
         self.nuc_ellipse_mat = nuc_ellipse_mat
         self.nuc_ctype = nuc_ctype
+        self.x_col = x_col
+        self.y_col = y_col
         gene2idx = {x: i for i, x in enumerate(genes)}
         self.gene_lookup = np.vectorize(gene2idx.get)
 
@@ -252,20 +244,24 @@ class TxPatchDataset(IterableDataset):
         res["patch_center"] = torch.tensor(
             [[xmin + 0.5 * self.patch_size, ymin + 0.5 * self.patch_size]],
         )
-        res["patch_indices"] = torch.tensor(
-            [[box_idx, patch_i, patch_j]], dtype=torch.int64
-        )
+        res["patch_indices"] = torch.tensor([[box_idx, patch_i, patch_j]], dtype=torch.int64)
 
         # Get the transcript info
         gene_cond = ds.field("is_gene")
-        min_cond = (ds.field("x") >= xmin) & (ds.field("y") >= ymin)
-        max_cond = (ds.field("x") <= xmax) & (ds.field("y") <= ymax)
+        min_cond = (ds.field(self.x_col) >= xmin) & (ds.field(self.y_col) >= ymin)
+        max_cond = (ds.field(self.x_col) <= xmax) & (ds.field(self.y_col) <= ymax)
         patch_table = self.tx_dataset.filter(gene_cond & min_cond & max_cond).to_table(
-            ["transcript_id", "x", "y", "feature_name"]
+            ["transcript_id", self.x_col, self.y_col, "feature_name"]
         )
 
         res["tx_xy"] = torch.from_numpy(
-            np.stack((patch_table["x"].to_numpy(), patch_table["y"].to_numpy()), axis=1)
+            np.stack(
+                (
+                    patch_table[self.x_col].to_numpy(),
+                    patch_table[self.y_col].to_numpy(),
+                ),
+                axis=1,
+            )
         ).float()
         n_tx = res["tx_xy"].shape[0]
 
@@ -276,12 +272,8 @@ class TxPatchDataset(IterableDataset):
         res["tx_gene_idx"] = torch.from_numpy(
             self.gene_lookup(patch_table["feature_name"].to_numpy())
         ).long()
-        res["tx_nuc_idx"] = torch.from_numpy(
-            np.full((n_tx,), fill_value=-1, dtype=np.int64)
-        ).long()
-        res["tx_idx"] = torch.from_numpy(
-            patch_table["transcript_id"].to_numpy().copy()
-        ).long()
+        res["tx_nuc_idx"] = torch.from_numpy(np.full((n_tx,), fill_value=-1, dtype=np.int64)).long()
+        res["tx_idx"] = torch.from_numpy(patch_table["transcript_id"].to_numpy().copy()).long()
 
         ## Get nuclei info
         pad = self.patch_padding
@@ -318,9 +310,7 @@ class TxPatchDataset(IterableDataset):
             if self.shuffle:
                 ## There is a single seed per patch
                 seed = self.seeds[box_idx, patch_i, patch_j]
-                indices = torch.randperm(
-                    n_tx, generator=torch.Generator().manual_seed(seed)
-                )
+                indices = torch.randperm(n_tx, generator=torch.Generator().manual_seed(seed))
             else:
                 indices = torch.arange(n_tx)
 
