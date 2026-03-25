@@ -62,9 +62,7 @@ class Trainer:
 
         model = model.to(device)
         if is_distributed:
-            self.model = DDP(
-                model, device_ids=[device.index], find_unused_parameters=True
-            )
+            self.model = DDP(model, device_ids=[device.index], find_unused_parameters=True)
         else:
             self.model = model
 
@@ -147,18 +145,14 @@ class Trainer:
             gene_idx=tx_batch["tx_gene_idx"],
             t=tx_batch["t"],
             tx_seqlens=tx_batch["tx_seqlens"],
-            nuc_seqlens=(
-                tx_batch["nuc_seqlens"] if "nuc_seqlens" in tx_batch else None
-            ),
+            nuc_seqlens=(tx_batch["nuc_seqlens"] if "nuc_seqlens" in tx_batch else None),
             nuc_ellipse_pos=(
                 tx_batch["nuc2ellipse_coordinates"]
                 if "nuc2ellipse_coordinates" in tx_batch
                 else None
             ),
             nuc_ellipse_seqlens=(
-                tx_batch["nuc2ellipse_seqlens"]
-                if "nuc2ellipse_seqlens" in tx_batch
-                else None
+                tx_batch["nuc2ellipse_seqlens"] if "nuc2ellipse_seqlens" in tx_batch else None
             ),
             nuc_ctypes=(tx_batch["nuc2ctype"] if "nuc2ctype" in tx_batch else None),
         )
@@ -180,9 +174,7 @@ class Trainer:
             self.optimizer.step()
             self.optimizer.zero_grad()
             if self.use_ema:
-                self._get_model_module().update_ema(
-                    overwrite=(epoch < self.ema_warmup_epochs)
-                )
+                self._get_model_module().update_ema(overwrite=(epoch < self.ema_warmup_epochs))
         else:
             if self.is_distributed:
                 with self.model.no_sync():  ## No need to sync when we don't take a step
@@ -232,15 +224,15 @@ class Trainer:
         }
         torch.save(to_save, os.path.join(self.output_dir, "chkpoint.pt"))
 
-    def train(self):
+    def train(self, start_epoch: int = 0):
         if self.is_main_process:
             logger.info(
-                f"Starting training: {self.n_epochs} epochs, "
+                f"Starting training: {self.n_epochs} epochs (from epoch {start_epoch}), "
                 f"{len(self.train_dataloader)} batches/epoch"
             )
             logger.info("Waiting for first batch from DataLoader workers...")
 
-        for epoch in range(self.n_epochs):
+        for epoch in range(start_epoch, self.n_epochs):
             self._run_epoch(epoch)
             if self.is_main_process and (epoch % self.save_freq == 0):
                 self._save_checkpoint(epoch)
@@ -269,6 +261,20 @@ def main_distributed(rank: int, world_size: int, config: OmegaConf):
         betas=(config.optim.beta1, config.optim.beta2),
         eps=config.optim.eps,
     )
+
+    # Restore optimizer state and get start epoch if resuming from checkpoint
+    start_epoch = 0
+    if "model_initialization" in config:
+        ckpt = torch.load(config.model_initialization, map_location="cpu")
+        if "optimizer" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer"])
+            if rank == 0:
+                logger.info("Restored optimizer state from checkpoint")
+        if "epoch" in ckpt:
+            start_epoch = ckpt["epoch"] + 1
+            if rank == 0:
+                logger.info(f"Resuming from epoch {start_epoch}")
+
     trainer = Trainer(
         config=config,
         model=model,
@@ -278,7 +284,7 @@ def main_distributed(rank: int, world_size: int, config: OmegaConf):
         is_distributed=True,
         is_main_process=(rank == 0),
     )
-    trainer.train()
+    trainer.train(start_epoch=start_epoch)
     destroy_process_group()
 
 
@@ -295,9 +301,7 @@ def main_single(config: OmegaConf, device: torch.device):
         f"Initializing DataLoader with {num_workers} workers, "
         f"max_tx={config.data.max_tx}, dataset_size={config.data.dataset_size}"
     )
-    dataloader = instantiate_train_dataloader(
-        config, distributed=False, num_workers=num_workers
-    )
+    dataloader = instantiate_train_dataloader(config, distributed=False, num_workers=num_workers)
     logger.info("DataLoader initialized, workers starting to prefetch batches...")
 
     model = instantiate_model(config)
@@ -308,6 +312,18 @@ def main_single(config: OmegaConf, device: torch.device):
         betas=(config.optim.beta1, config.optim.beta2),
         eps=config.optim.eps,
     )
+
+    # Restore optimizer state and get start epoch if resuming from checkpoint
+    start_epoch = 0
+    if "model_initialization" in config:
+        ckpt = torch.load(config.model_initialization, map_location="cpu")
+        if "optimizer" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer"])
+            logger.info("Restored optimizer state from checkpoint")
+        if "epoch" in ckpt:
+            start_epoch = ckpt["epoch"] + 1
+            logger.info(f"Resuming from epoch {start_epoch}")
+
     trainer = Trainer(
         config=config,
         model=model,
@@ -317,7 +333,7 @@ def main_single(config: OmegaConf, device: torch.device):
         is_distributed=False,
         is_main_process=True,
     )
-    trainer.train()
+    trainer.train(start_epoch=start_epoch)
 
 
 # Keep old name for backwards compatibility
