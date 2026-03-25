@@ -14,9 +14,9 @@ from omegaconf import OmegaConf
 
 def sinusoidal_embedding(x: torch.Tensor, dim: int, max_period: int = 10000):
     half = dim // 2
-    freqs = torch.exp(
-        -math.log(max_period) * torch.arange(start=0, end=half) / half
-    ).to(device=x.device)
+    freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half) / half).to(
+        device=x.device
+    )
     args = x[:, None].float() * freqs[None]
     embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
     if dim % 2:
@@ -80,12 +80,8 @@ class AttentionOp(torch.autograd.Function):
             dim=2,
             input_dtype=torch.float32,
         )
-        dq = torch.einsum("nck,nqk->ncq", k.to(torch.float32), db).to(
-            q.dtype
-        ) / np.sqrt(k.shape[1])
-        dk = torch.einsum("ncq,nqk->nck", q.to(torch.float32), db).to(
-            k.dtype
-        ) / np.sqrt(k.shape[1])
+        dq = torch.einsum("nck,nqk->ncq", k.to(torch.float32), db).to(q.dtype) / np.sqrt(k.shape[1])
+        dk = torch.einsum("ncq,nqk->nck", q.to(torch.float32), db).to(k.dtype) / np.sqrt(k.shape[1])
         return dq, dk
 
 
@@ -185,11 +181,7 @@ class Conv2d(torch.nn.Module):
     def forward(self, x):
         w = self.weight.to(x.dtype) if self.weight is not None else None
         b = self.bias.to(x.dtype) if self.bias is not None else None
-        f = (
-            self.resample_filter.to(x.dtype)
-            if self.resample_filter is not None
-            else None
-        )
+        f = self.resample_filter.to(x.dtype) if self.resample_filter is not None else None
         w_pad = w.shape[-1] // 2 if w is not None else 0
         f_pad = (f.shape[-1] - 1) // 2 if f is not None else 0
 
@@ -329,18 +321,14 @@ class UNetBlock(torch.nn.Module):
         else:
             x = F.silu(self.norm1(x.add_(params)))
 
-        x = self.conv1(
-            torch.nn.functional.dropout(x, p=self.dropout, training=self.training)
-        )
+        x = self.conv1(torch.nn.functional.dropout(x, p=self.dropout, training=self.training))
         x = x.add_(self.skip(orig) if self.skip is not None else orig)
         x = x * self.skip_scale
 
         if self.num_heads:
             q, k, v = (
                 self.qkv(self.norm2(x))
-                .reshape(
-                    x.shape[0] * self.num_heads, x.shape[1] // self.num_heads, 3, -1
-                )
+                .reshape(x.shape[0] * self.num_heads, x.shape[1] // self.num_heads, 3, -1)
                 .unbind(2)
             )
             w = AttentionOp.apply(q, k)
@@ -439,9 +427,7 @@ class DhariwalUNet(torch.nn.Module):
                     **block_kwargs,
                 )
         self.out_norm = GroupNorm(num_channels=cout)
-        self.out_conv = Conv2d(
-            in_channels=cout, out_channels=out_channels, kernel=3, **init_zero
-        )
+        self.out_conv = Conv2d(in_channels=cout, out_channels=out_channels, kernel=3, **init_zero)
 
     def forward(
         self,

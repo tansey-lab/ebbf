@@ -35,9 +35,7 @@ def remove(path):
 
 
 class DBSCANWorker(mp.Process):
-    def __init__(
-        self, in_q: mp.Queue, out_q: mp.Queue, epsilon: float, output_path: str
-    ):
+    def __init__(self, in_q: mp.Queue, out_q: mp.Queue, epsilon: float, output_path: str):
 
         super().__init__()
         self.in_q = in_q
@@ -76,9 +74,7 @@ class DBSCANWorker(mp.Process):
 ###############
 ### STEP 1 ###
 ##############
-def filter_unique_and_remap_tx(
-    input_path: str | list[str], output_path: str, idx2genes: dict
-):
+def filter_unique_and_remap_tx(input_path: str | list[str], output_path: str, idx2genes: dict):
 
     df = pl.scan_parquet(input_path)
 
@@ -91,9 +87,7 @@ def filter_unique_and_remap_tx(
 
     ## Replace gene indices with gene names
     df = df.with_columns(
-        pl.col("tx_gene_idx")
-        .replace_strict(idx2genes, default="None")
-        .alias("feature_name")
+        pl.col("tx_gene_idx").replace_strict(idx2genes, default="None").alias("feature_name")
     )
 
     ## Ship it
@@ -131,9 +125,7 @@ def group_labels_min_size(x, s):
     return labels
 
 
-def grid_group_lazyframe(
-    ldf: pl.LazyFrame, box_width: float, min_size: int, offset: float
-):
+def grid_group_lazyframe(ldf: pl.LazyFrame, box_width: float, min_size: int, offset: float):
 
     grid_ldf = ldf.with_columns(
         [
@@ -143,17 +135,11 @@ def grid_group_lazyframe(
     )
 
     grid_ldf = grid_ldf.with_columns(
-        (
-            pl.col("grid_x").cast(pl.String) + "_" + pl.col("grid_y").cast(pl.String)
-        ).alias("grid_name")
+        (pl.col("grid_x").cast(pl.String) + "_" + pl.col("grid_y").cast(pl.String)).alias(
+            "grid_name"
+        )
     )
-    counts = (
-        grid_ldf.group_by(["grid_name"])
-        .len()
-        .collect()
-        .to_pandas()
-        .sort_values(by="len")
-    )
+    counts = grid_ldf.group_by(["grid_name"]).len().collect().to_pandas().sort_values(by="len")
     counts["label"] = group_labels_min_size(counts["len"].values, min_size)
     grid_name2label = dict(zip(counts["grid_name"], counts["label"]))
     grid_ldf = grid_ldf.with_columns(
@@ -177,13 +163,9 @@ def double_grid_and_group(
     df = pl.scan_parquet(input_path)
 
     ## Build two offset grids
-    grid_a_df = grid_group_lazyframe(
-        df, box_width=box_width, min_size=min_size, offset=0.0
-    )
+    grid_a_df = grid_group_lazyframe(df, box_width=box_width, min_size=min_size, offset=0.0)
     grid_a_df = grid_a_df.with_columns(pl.lit(0).alias("grid_version"))
-    grid_b_df = grid_group_lazyframe(
-        df, box_width=box_width, min_size=min_size, offset=0.5
-    )
+    grid_b_df = grid_group_lazyframe(df, box_width=box_width, min_size=min_size, offset=0.5)
     grid_b_df = grid_b_df.with_columns(pl.lit(1).alias("grid_version"))
 
     ## Concatenate grids and save, partitioning by grid version and label
@@ -202,9 +184,7 @@ def double_grid_and_group(
 ##############
 
 
-def grid_level_cluster(
-    input_path: str, output_path: str, epsilon: float, n_workers: int
-):
+def grid_level_cluster(input_path: str, output_path: str, epsilon: float, n_workers: int):
 
     ## Read in the parquet dataset
     source_dataset = ds.dataset(input_path, format="parquet")
@@ -216,9 +196,7 @@ def grid_level_cluster(
     in_q, out_q = ctx.Queue(), ctx.Queue()
 
     ## Spin up the workers
-    workers = [
-        DBSCANWorker(in_q, out_q, epsilon, output_path) for _ in range(n_workers)
-    ]
+    workers = [DBSCANWorker(in_q, out_q, epsilon, output_path) for _ in range(n_workers)]
     for w in workers:
         w.start()
 
@@ -282,12 +260,8 @@ def grid_connected_components(input_path: str, output_path: str):
     )
     edges = edges.collect(engine="streaming").to_pandas()
 
-    unique_cluster_id_0, idx_0 = np.unique(
-        edges["full_cluster_id_0"], return_inverse=True
-    )
-    unique_cluster_id_1, idx_1 = np.unique(
-        edges["full_cluster_id_1"], return_inverse=True
-    )
+    unique_cluster_id_0, idx_0 = np.unique(edges["full_cluster_id_0"], return_inverse=True)
+    unique_cluster_id_1, idx_1 = np.unique(edges["full_cluster_id_1"], return_inverse=True)
     n_0 = unique_cluster_id_0.shape[0]
     idx_1 = idx_1 + n_0
 
@@ -299,9 +273,7 @@ def grid_connected_components(input_path: str, output_path: str):
     cluster_id2final_label = dict(zip(unique_cluster_id, labels))
 
     df_mapped = df.filter(pl.col("grid_version") == 0).with_columns(
-        pl.col("full_cluster_id")
-        .replace_strict(cluster_id2final_label)
-        .alias("ef_cluster_id")
+        pl.col("full_cluster_id").replace_strict(cluster_id2final_label).alias("ef_cluster_id")
     )
     df_mapped.sink_parquet(output_path)
     return "Success!"
@@ -347,9 +319,7 @@ def map_clusters_to_cells(
     ## Compute mahalanobis distance of cluster to closest centroid ellipse
     diff = cluster_xy - nuc_centroid[centroid_idx]
     Q = np.linalg.inv(np.matmul(nuc_ellipse_mat, nuc_ellipse_mat.mT))
-    mahalanobis_distance = np.sqrt(
-        np.einsum("...i,...ij,...j->...", diff, Q[centroid_idx], diff)
-    )
+    mahalanobis_distance = np.sqrt(np.einsum("...i,...ij,...j->...", diff, Q[centroid_idx], diff))
 
     ## Map everything back onto the lazyframe
     cluster_id2centroid_cell_id = dict(zip(cluster_id, centroid_cell_id))
@@ -357,9 +327,7 @@ def map_clusters_to_cells(
     cluster_id2mahalanobis_distance = dict(zip(cluster_id, mahalanobis_distance))
 
     df = df.with_columns(
-        pl.col("ef_cluster_id")
-        .replace_strict(cluster_id2centroid_cell_id)
-        .alias("cell_id")
+        pl.col("ef_cluster_id").replace_strict(cluster_id2centroid_cell_id).alias("cell_id")
     )
     df = df.with_columns(
         pl.col("ef_cluster_id")
@@ -416,14 +384,11 @@ def create_anndata(
     flow_df = pl.scan_parquet(ef_tx_fname)
 
     flow_df = flow_df.filter(
-        (pl.col("centroid_distance") < cd_cutoff)
-        & (pl.col("mahalanobis_distance") <= 1)
+        (pl.col("centroid_distance") < cd_cutoff) & (pl.col("mahalanobis_distance") <= 1)
     )
     flow_df = flow_df.with_columns(pl.col("transcript_id").cast(pl.UInt64))
 
-    unique_cell_id = np.sort(
-        flow_df.select(pl.col("cell_id")).unique().collect().to_numpy()[:, 0]
-    )
+    unique_cell_id = np.sort(flow_df.select(pl.col("cell_id")).unique().collect().to_numpy()[:, 0])
     unique_genes = np.sort(
         flow_df.select(pl.col("feature_name")).unique().collect().to_numpy()[:, 0]
     )
@@ -432,19 +397,12 @@ def create_anndata(
     n_cells = unique_cell_id.shape[0]
     n_genes = unique_genes.shape[0]
 
-    flow_df = flow_df.with_columns(
-        pl.col("cell_id").replace_strict(cell_id2idx).alias("cell_idx")
-    )
+    flow_df = flow_df.with_columns(pl.col("cell_id").replace_strict(cell_id2idx).alias("cell_idx"))
     flow_df = flow_df.with_columns(
         pl.col("feature_name").replace_strict(gene2idx).alias("gene_idx")
     )
 
-    X = (
-        flow_df.group_by(["cell_idx", "gene_idx"])
-        .len(name="count")
-        .collect()
-        .to_pandas()
-    )
+    X = flow_df.group_by(["cell_idx", "gene_idx"]).len(name="count").collect().to_pandas()
     mat = csr_matrix(
         (X["count"].values, (X["cell_idx"].values, X["gene_idx"].values)),
         shape=(n_cells, n_genes),
@@ -486,9 +444,7 @@ def post_process(
     logger.info("Step 1: getting unique tx...")
     temp_fname1 = "temp1-" + uuid.uuid4().hex + ".parquet"
     temp_path1 = os.path.join(work_dir, temp_fname1)
-    filter_unique_and_remap_tx(
-        input_path=input_files, output_path=temp_path1, idx2genes=idx2genes
-    )
+    filter_unique_and_remap_tx(input_path=input_files, output_path=temp_path1, idx2genes=idx2genes)
 
     ## Step 2: Build double grid
     logger.info("Step 2: building double grid...")
@@ -559,9 +515,7 @@ if __name__ == "__main__":
         nargs="+",
         help="Input parquet files from inference",
     )
-    parser.add_argument(
-        "--tma", type=str, required=True, help="Path to stdata.npz file"
-    )
+    parser.add_argument("--tma", type=str, required=True, help="Path to stdata.npz file")
     parser.add_argument(
         "--cluster_distance",
         type=float,

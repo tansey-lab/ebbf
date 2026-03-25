@@ -15,9 +15,7 @@ def batch_generator(dataset: ds.Dataset, cols: list[str], batch_size: int):
         curr_size += data[0].shape[0]
 
         if curr_size >= batch_size:
-            data = tuple(
-                np.concatenate([x[i] for x in curr_datas]) for i in range(n_cols)
-            )
+            data = tuple(np.concatenate([x[i] for x in curr_datas]) for i in range(n_cols))
             curr_datas = []
             curr_size = 0
             yield data

@@ -34,9 +34,7 @@ def detect_input_format(input_dir: str) -> str:
         "nucleus_boundaries.parquet",
         "experiment.xenium",
     ]
-    has_xenium_files = all(
-        os.path.exists(os.path.join(input_dir, f)) for f in xenium_markers[:2]
-    )
+    has_xenium_files = all(os.path.exists(os.path.join(input_dir, f)) for f in xenium_markers[:2])
 
     if has_xenium_files:
         return "xenium"
@@ -46,9 +44,7 @@ def detect_input_format(input_dir: str) -> str:
         "points/transcripts",
         "shapes/nucleus_boundaries",
     ]
-    has_spatialdata = all(
-        os.path.exists(os.path.join(input_dir, p)) for p in spatialdata_markers
-    )
+    has_spatialdata = all(os.path.exists(os.path.join(input_dir, p)) for p in spatialdata_markers)
 
     if has_spatialdata:
         return "spatialdata"
@@ -279,10 +275,7 @@ def _compute_boxes_from_bounds(
         a_y = min_y + np.arange(n_y) * (L_y - box_width) / (n_y - 1)
 
     boxes = np.array(
-        [
-            (xmin, ymin, xmin + box_width, ymin + box_width)
-            for xmin, ymin in product(a_x, a_y)
-        ]
+        [(xmin, ymin, xmin + box_width, ymin + box_width) for xmin, ymin in product(a_x, a_y)]
     )
     return boxes
 
@@ -405,10 +398,7 @@ def process_zarr(
     n_nucs_per_box = np.array(
         [
             np.count_nonzero(
-                (c[:, 0] >= box[0])
-                & (c[:, 1] >= box[1])
-                & (c[:, 0] < box[2])
-                & (c[:, 1] < box[3])
+                (c[:, 0] >= box[0]) & (c[:, 1] >= box[1]) & (c[:, 0] < box[2]) & (c[:, 1] < box[3])
             )
             for box in boxes
         ]
@@ -550,9 +540,7 @@ class STDataset:
                 self.cell_triangle_xy if self.cell_triangle_xy.shape[0] > 0 else None
             ),
             cell_triangle_probs=(
-                self.cell_triangle_probs
-                if self.cell_triangle_probs.shape[0] > 0
-                else None
+                self.cell_triangle_probs if self.cell_triangle_probs.shape[0] > 0 else None
             ),
         )
         return dataset

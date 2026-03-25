@@ -5,18 +5,14 @@ from ebbf.inference.post_process import post_process
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Post-process EBB&Flow inference results"
-    )
+    parser = argparse.ArgumentParser(description="Post-process EBB&Flow inference results")
     parser.add_argument(
         "input_files",
         type=str,
         nargs="+",
         help="Input parquet files from inference",
     )
-    parser.add_argument(
-        "--tma", type=str, required=True, help="Path to stdata.npz file"
-    )
+    parser.add_argument("--tma", type=str, required=True, help="Path to stdata.npz file")
     parser.add_argument(
         "--cluster_distance",
         type=float,

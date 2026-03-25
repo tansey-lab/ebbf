@@ -69,9 +69,7 @@ def bootstrap_sample_sequence(
 
     if not with_offsets:
         cu_sample_sizes = F.pad((seqlens - 1).cumsum(-1), pad=(1, 0), value=0)[:-1]
-        boot_indices = boot_indices - torch.repeat_interleave(
-            cu_sample_sizes, sample_sizes
-        )
+        boot_indices = boot_indices - torch.repeat_interleave(cu_sample_sizes, sample_sizes)
         boot_indices = boot_indices - boot_offsets
     return (boot_indices, sample_sizes)
 
@@ -100,9 +98,7 @@ def categorical_sample_index_sequence(
     ## cu_probs = torch.cumsum(probs, dim=0)
     cu_seqlens = F.pad(seqlens.cumsum(-1), pad=(1, 0), value=0)
     seg_cu_probs = segmented_cumsum(probs, cu_seqlens=cu_seqlens)
-    seq_offsets = torch.repeat_interleave(
-        torch.arange(seqlens.shape[0], device=device), seqlens
-    )
+    seq_offsets = torch.repeat_interleave(torch.arange(seqlens.shape[0], device=device), seqlens)
     cu_probs = seg_cu_probs + seq_offsets
 
     ## Sample positions
@@ -128,9 +124,7 @@ def clip_sequence(seqlens: torch.Tensor, max_len: int):
     cu_seqlens = F.pad(seqlens.cumsum(0), (1, 0), value=0)  # (B+1,)
 
     # 2) clipped lengths: how many to keep from each seq
-    lengths = torch.minimum(
-        seqlens, torch.tensor(max_len, device=seqlens.device)
-    )  # (B,)
+    lengths = torch.minimum(seqlens, torch.tensor(max_len, device=seqlens.device))  # (B,)
 
     # 3) flattened “new” sequence‐starts in sdata
     cum_eff = F.pad(lengths.cumsum(0), (1, 0), value=0)  # (B+1,)
@@ -227,9 +221,7 @@ class TranscriptSampler:
         tx_offset = tx_pos - nuc2xy[tx2nuc_idx]
 
         ## Perturb the sizes of the polygons
-        sizes = 1.0 + (self.max_cell_expansion_factor - 1.0) * torch.rand(
-            n_nucs, 1, device=device
-        )
+        sizes = 1.0 + (self.max_cell_expansion_factor - 1.0) * torch.rand(n_nucs, 1, device=device)
         tx_offset = tx_offset * sizes[tx2nuc_idx]
 
         ## Perturb with a v. small amount of white noise
@@ -292,9 +284,7 @@ class TranscriptSampler:
         corrupt_scales = 1.0 + (self.max_noise_scale - 1.0) * torch.rand(
             n_corrupt, 1, device=device
         )
-        unfiltered_tx_offset[corrupt_mask] = (
-            corrupt_scales * unfiltered_tx_offset[corrupt_mask]
-        )
+        unfiltered_tx_offset[corrupt_mask] = corrupt_scales * unfiltered_tx_offset[corrupt_mask]
 
         ## Sample xy positions of transcripts
         unfiltered_tx_nuc_xy = nuc2xy[unfiltered_tx2nuc_idx]

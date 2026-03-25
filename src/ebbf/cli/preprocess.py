@@ -16,9 +16,7 @@ def main():
         required=True,
         help="Path to input directory (SpatialData zarr or Xenium output)",
     )
-    parser.add_argument(
-        "--output", type=str, required=True, help="Output path for stdata.npz file"
-    )
+    parser.add_argument("--output", type=str, required=True, help="Output path for stdata.npz file")
     parser.add_argument(
         "--input_format",
         type=str,

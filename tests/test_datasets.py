@@ -226,9 +226,7 @@ class TestSparseDataset:
             xmin=xmin - 1, xmax=xmax + 1, ymin=ymin - 1, ymax=ymax + 1
         )
 
-        assert len(all_indices) == sparse_dataset.nuc2xy.shape[0], (
-            "RTree should contain all nuclei"
-        )
+        assert len(all_indices) == sparse_dataset.nuc2xy.shape[0], "RTree should contain all nuclei"
 
     def test_sample_patch_eventually_succeeds(self, sparse_dataset):
         """Test that _sample_patch eventually finds a valid patch."""
