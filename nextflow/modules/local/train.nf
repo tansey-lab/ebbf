@@ -41,14 +41,19 @@ process EBBF_TRAIN {
     def attn_res = params.attn_resolutions.tokenize(',').collect { it.trim() as int }
     def chan_mult = params.channel_mult.tokenize(',').collect { it.trim() as int }
     def wandb_key = params.wandb_api_key ?: ''
+    def initial_weights = params.resume_from_weights ?: ''
     """
     mkdir -p model_output
 
     # Check for checkpoint staged by beforeScript from previous attempt
+    # Priority: prev_checkpoint.pt (retry) > resume_from_weights (user-provided)
     RESUME_FLAG=""
     if [ -f "prev_checkpoint.pt" ]; then
         RESUME_FLAG="--resume_from prev_checkpoint.pt"
         echo "Resuming from staged checkpoint (attempt ${task.attempt})"
+    elif [ -n "${initial_weights}" ]; then
+        RESUME_FLAG="--resume_from ${initial_weights}"
+        echo "Initializing from user-provided weights: ${initial_weights}"
     fi
 
     # Generate config from params
