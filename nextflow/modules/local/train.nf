@@ -9,32 +9,47 @@ process EBBF_TRAIN {
     input:
     tuple val(meta), path(tma)
 
+    // Stage checkpoint from persistent location before task starts (for retries)
+    beforeScript {
+        """
+        CKPT_SRC='${params.outdir}/checkpoints/${meta.id}/chkpoint.pt'
+        if [ -f "\$CKPT_SRC" ]; then
+            cp "\$CKPT_SRC" prev_checkpoint.pt
+            echo "Staged checkpoint from previous attempt"
+        fi
+        """
+    }
+
+    // Save checkpoint to persistent location after each attempt (runs even on failure)
+    afterScript {
+        """
+        CKPT_DIR='${params.outdir}/checkpoints/${meta.id}'
+        mkdir -p "\$CKPT_DIR"
+        if [ -f model_output/chkpoint.pt ]; then
+            cp model_output/chkpoint.pt "\$CKPT_DIR/"
+            echo "Saved checkpoint to persistent location"
+        fi
+        """
+    }
+
     output:
     tuple val(meta), path("model_output"), emit: model
     path "versions.yml"                  , emit: versions
 
     script:
     def args = task.ext.args ?: ''
-    // Build resume command for retry attempts - finds latest checkpoint from previous attempt
-    def resume_cmd = ""
-    def prevWorkDir = task.previousAttempt?.workDir
-    if (task.attempt > 1 && prevWorkDir) {
-        resume_cmd = """
-        PREV_DIR="${prevWorkDir}"
-        LATEST_CKPT="\${PREV_DIR}/model_output/chkpoint.pt"
-        if [ -f "\$LATEST_CKPT" ]; then
-            RESUME_FLAG="--resume_from \$LATEST_CKPT"
-            echo "Resuming from \$LATEST_CKPT (attempt ${task.attempt})"
-        fi
-        """
-    }
     def attn_res = params.attn_resolutions.tokenize(',').collect { it.trim() as int }
     def chan_mult = params.channel_mult.tokenize(',').collect { it.trim() as int }
     def wandb_key = params.wandb_api_key ?: ''
     """
     mkdir -p model_output
+
+    # Check for checkpoint staged by beforeScript from previous attempt
     RESUME_FLAG=""
-    ${resume_cmd}
+    if [ -f "prev_checkpoint.pt" ]; then
+        RESUME_FLAG="--resume_from prev_checkpoint.pt"
+        echo "Resuming from staged checkpoint (attempt ${task.attempt})"
+    fi
 
     # Generate config from params
     cat > train_config.yaml << 'EOFCONFIG'
@@ -107,6 +122,10 @@ EOFCONFIG
     if [ -n "${wandb_key}" ]; then
         export WANDB_API_KEY="${wandb_key}"
     fi
+
+    # Use consistent run ID across retries so wandb resumes to same run
+    export WANDB_RUN_ID="${workflow.runName}_${meta.id}"
+    export WANDB_RESUME="allow"
 
     ebbf-train --config train_config.yaml \$RESUME_FLAG
 
