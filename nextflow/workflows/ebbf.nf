@@ -37,16 +37,25 @@ workflow EBBF {
 
     //
     // STEP 2: Train - Train the model using TMA (config from params)
+    // Skip training if model_weights is provided (inference-only mode)
     //
-    EBBF_TRAIN(EBBF_PREPROCESS.out.tma)
-    ch_versions = ch_versions.mix(EBBF_TRAIN.out.versions.first())
+    if (params.model_weights) {
+        // Use pre-trained model weights, skip training
+        ch_model = EBBF_PREPROCESS.out.tma
+            .map { meta, tma -> [ meta, file(params.model_weights) ] }
+    } else {
+        // Train the model
+        EBBF_TRAIN(EBBF_PREPROCESS.out.tma)
+        ch_versions = ch_versions.mix(EBBF_TRAIN.out.versions.first())
+        ch_model = EBBF_TRAIN.out.model
+    }
 
     //
     // STEP 3: Infer - Run inference with the trained model
     // Transcripts are derived from zarr_dir: points/transcripts/
     // Generate worker channels for parallel inference
     //
-    ch_infer_input = EBBF_TRAIN.out.model
+    ch_infer_input = ch_model
         .join(EBBF_PREPROCESS.out.tma)
         .join(ch_samplesheet)
         .combine(Channel.of(0..<params.n_infer_workers))
