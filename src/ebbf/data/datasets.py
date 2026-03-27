@@ -243,6 +243,7 @@ class TxPatchDataset(IterableDataset):
         ## Patch-level info
         res["patch_center"] = torch.tensor(
             [[xmin + 0.5 * self.patch_size, ymin + 0.5 * self.patch_size]],
+            dtype=torch.float32,
         )
         res["patch_indices"] = torch.tensor([[box_idx, patch_i, patch_j]], dtype=torch.int64)
 
