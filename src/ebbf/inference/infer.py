@@ -215,6 +215,7 @@ if __name__ == "__main__":
     model = instantiate_model(config)
     model.train(False)
     model.load_state_dict(state_dict["model"])
+    model.float()
     device_str = config.infer.get("device", "auto")
     if device_str == "auto":
         if torch.cuda.is_available():

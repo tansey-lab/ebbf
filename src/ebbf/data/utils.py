@@ -379,7 +379,7 @@ def ellipse_grid_indices(S: torch.Tensor, c: torch.Tensor, L: float, M: int):
     S_inv_rep = torch.repeat_interleave(S_inv, bbox_seqlens, dim=0)
     c_rep = torch.repeat_interleave(c, bbox_seqlens, dim=0)
 
-    grid1d = L * (2 * torch.arange(M, device=device) + 1 - M) / M
+    grid1d = L * (2 * torch.arange(M, device=device, dtype=c.dtype) + 1 - M) / M
     grid2d_locs = torch.stack((grid1d[bbox_idx[:, 0]], grid1d[bbox_idx[:, 1]]), dim=-1)
     grid2d_locs_proj = torch.einsum("bij, bj -> bi", S_inv_rep, (grid2d_locs - c_rep))
     locs_norms: torch.Tensor = torch.linalg.vector_norm(grid2d_locs_proj, dim=-1)
