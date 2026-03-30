@@ -191,6 +191,11 @@ def process_batch(batch):
 
     if not np.any(mask):
         logger.debug("EMPTY")
+        num = len(batch["feature_name"])
+        return {
+            "local_nuc_gene_counts": csr_array((_n_nucs, _n_genes), dtype=np.float64),
+            "num": num,
+        }
 
     nuclear_tx_gene_idx = np.vectorize(_gene2idx.get)(nuc_genes[mask])
     nuclear_tx_nuc_idx = np.vectorize(_cell_id2idx.get)(nuc_cell_ids[mask])
