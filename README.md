@@ -98,8 +98,10 @@ Run inference to assign transcripts:
 
 ```bash
 ebbf-infer \
-    --model_directory /path/to/trained_model \
-    --transcripts_fname /path/to/transcripts.parquet \
+    --config /path/to/config.yaml \
+    --weights /path/to/chkpoint.pt \
+    --dataset /path/to/stdata.npz \
+    --zarr_dir /path/to/spatialdata.zarr \
     --n_workers 4 \
     --worker_id 0
 ```

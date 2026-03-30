@@ -237,9 +237,5 @@ class EBBFConfig:
     n_ctypes: int = 1
     """Number of cell types (set dynamically from data)."""
 
-    # Optional fields for resuming/continuing training
-    model_initialization: str | None = None
-    """Path to checkpoint file to initialize model from."""
-
     prev_model_folder: str | None = None
     """Path to previous model folder for continuing training."""

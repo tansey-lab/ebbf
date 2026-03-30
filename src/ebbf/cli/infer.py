@@ -22,7 +22,8 @@ def main():
     torch.set_default_dtype(torch.float32)
 
     parser = argparse.ArgumentParser(description="Run EBB&Flow inference")
-    parser.add_argument("--model_directory", type=str, required=True, help="Model directory")
+    parser.add_argument("--config", type=str, required=True, help="Path to config YAML file")
+    parser.add_argument("--weights", type=str, required=True, help="Path to model checkpoint file")
     parser.add_argument(
         "--zarr_dir",
         type=str,
@@ -58,7 +59,8 @@ def main():
     )
     args = parser.parse_args()
 
-    model_directory: str = args.model_directory
+    config_path: str = args.config
+    weights_path: str = args.weights
     zarr_dir: str = args.zarr_dir
     n_workers: int = args.n_workers
     worker_id: int = args.worker_id
@@ -76,7 +78,7 @@ def main():
         logger.warning("File exists and we are not overwriting. Exiting now...")
         sys.exit(0)
 
-    config = OmegaConf.load(os.path.join(model_directory, "config.yaml"))
+    config = OmegaConf.load(config_path)
 
     # Detect or use provided input format
     if input_format is None:
@@ -119,7 +121,7 @@ def main():
     )
 
     # Load in the model
-    state_dict = torch.load(os.path.join(model_directory, "chkpoint.pt"), map_location="cpu")
+    state_dict = torch.load(weights_path, map_location="cpu")
     model = instantiate_model(config)
     model.train(False)
     model.load_state_dict(state_dict["model"])

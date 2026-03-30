@@ -243,7 +243,12 @@ class Trainer:
 
 
 def main_distributed(
-    rank: int, world_size: int, config: EBBFConfig, dataset_path: str, output_dir: str
+    rank: int,
+    world_size: int,
+    config: EBBFConfig,
+    dataset_path: str,
+    output_dir: str,
+    resume_from: str | None = None,
 ):
     """Distributed training entry point (multi-GPU)."""
     ddp_setup(rank, world_size)
@@ -258,7 +263,7 @@ def main_distributed(
     )
 
     device = torch.device(f"cuda:{rank}")
-    model = instantiate_model(config, device=device)
+    model = instantiate_model(config, device=device, checkpoint_path=resume_from)
     model = model.to(device)
 
     optimizer = torch.optim.AdamW(
@@ -270,8 +275,8 @@ def main_distributed(
 
     # Restore optimizer state and get start epoch if resuming from checkpoint
     start_epoch = 0
-    if config.get("model_initialization"):
-        ckpt = torch.load(config.model_initialization, map_location=device)
+    if resume_from:
+        ckpt = torch.load(resume_from, map_location=device)
         if "optimizer" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer"])
             if rank == 0:
@@ -295,7 +300,13 @@ def main_distributed(
     destroy_process_group()
 
 
-def main_single(config: EBBFConfig, device: torch.device, dataset_path: str, output_dir: str):
+def main_single(
+    config: EBBFConfig,
+    device: torch.device,
+    dataset_path: str,
+    output_dir: str,
+    resume_from: str | None = None,
+):
     """Single-process training entry point (CPU or single GPU)."""
     num_workers = config.train.num_workers
 
@@ -308,7 +319,7 @@ def main_single(config: EBBFConfig, device: torch.device, dataset_path: str, out
     )
     logger.info("DataLoader initialized, workers starting to prefetch batches...")
 
-    model = instantiate_model(config, device=device)
+    model = instantiate_model(config, device=device, checkpoint_path=resume_from)
     model = model.to(device)
 
     optimizer = torch.optim.AdamW(
@@ -320,8 +331,8 @@ def main_single(config: EBBFConfig, device: torch.device, dataset_path: str, out
 
     # Restore optimizer state and get start epoch if resuming from checkpoint
     start_epoch = 0
-    if config.get("model_initialization"):
-        ckpt = torch.load(config.model_initialization, map_location=device)
+    if resume_from:
+        ckpt = torch.load(resume_from, map_location=device)
         if "optimizer" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer"])
             logger.info("Restored optimizer state from checkpoint")
