@@ -266,7 +266,7 @@ def main_distributed(rank: int, world_size: int, config: EBBFConfig):
     # Restore optimizer state and get start epoch if resuming from checkpoint
     start_epoch = 0
     if config.get("model_initialization"):
-        ckpt = torch.load(config.model_initialization, map_location="cpu")
+        ckpt = torch.load(config.model_initialization, map_location=f"cuda:{rank}")
         if "optimizer" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer"])
             if rank == 0:
@@ -312,7 +312,7 @@ def main_single(config: EBBFConfig, device: torch.device):
     # Restore optimizer state and get start epoch if resuming from checkpoint
     start_epoch = 0
     if config.get("model_initialization"):
-        ckpt = torch.load(config.model_initialization, map_location="cpu")
+        ckpt = torch.load(config.model_initialization, map_location=device)
         if "optimizer" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer"])
             logger.info("Restored optimizer state from checkpoint")
