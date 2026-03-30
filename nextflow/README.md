@@ -65,6 +65,24 @@ nextflow run nf-core/ebbf \
    --outdir <OUTDIR>
 ```
 
+### MSKCC Iris Profiles
+
+Two profiles are available for running on the MSKCC Iris HPC cluster:
+
+- **`mskcc_iris`** — Standard Iris profile. GPU jobs use `--constraint='h100|a100'` to target tagged GPU nodes.
+- **`mskcc_iris_h200`** — H200-specific profile. GPU jobs use `--nodelist=iscn003,iscn004` instead of `--constraint` to target nodes with H200 GPUs (useful when GPU types are not yet tagged by the HPC team).
+
+Example usage:
+
+```bash
+nextflow run nf-core/ebbf \
+   -profile mskcc_iris_h200,singularity \
+   --input samplesheet.csv \
+   --outdir <OUTDIR>
+```
+
+The H200 profile can also be activated independently via `--limit_h200_nodes true` with any profile.
+
 > [!WARNING]
 > Please provide pipeline parameters via the CLI or Nextflow `-params-file` option. Custom config files including those provided by the `-c` Nextflow option can be used to provide any configuration _**except for parameters**_; see [docs](https://nf-co.re/docs/usage/getting_started/configuration#custom-configuration-files).
 
