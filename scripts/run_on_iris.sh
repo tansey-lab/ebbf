@@ -41,6 +41,7 @@ echo "  Samplesheet: $SAMPLESHEET"
 [[ -n "$WANDB_ARGS" ]] && echo "  W&B:    enabled"
 
 nextflow run "$PIPELINE_DIR" \
+    -w "$OUTPUT_DIR"/nf \
     -profile mskcc_iris,conda \
     --input "$SAMPLESHEET" \
     --outdir "$OUTPUT_DIR" \

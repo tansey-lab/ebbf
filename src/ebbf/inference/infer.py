@@ -114,7 +114,7 @@ def infer(
         collate_fn=tx_patch_collate_fn,
     )
     accum = {}
-    for batch in tqdm(dataloader):
+    for batch in tqdm(dataloader, total=len(dataloader)):
         tx_idx, tx_pos, dist = flow_inference.flow(batch)
         patch_center = torch.repeat_interleave(
             batch["patch_center"], repeats=batch["tx_seqlens"], dim=0
