@@ -254,7 +254,9 @@ def main_distributed(rank: int, world_size: int, config: EBBFConfig):
         rank=rank,
     )
 
-    model = instantiate_model(config)
+    device = torch.device(f"cuda:{rank}")
+    model = instantiate_model(config, device=device)
+    model = model.to(device)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -266,7 +268,7 @@ def main_distributed(rank: int, world_size: int, config: EBBFConfig):
     # Restore optimizer state and get start epoch if resuming from checkpoint
     start_epoch = 0
     if config.get("model_initialization"):
-        ckpt = torch.load(config.model_initialization, map_location=f"cuda:{rank}")
+        ckpt = torch.load(config.model_initialization, map_location=device)
         if "optimizer" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer"])
             if rank == 0:
@@ -281,7 +283,7 @@ def main_distributed(rank: int, world_size: int, config: EBBFConfig):
         model=model,
         train_dataloader=dataloader,
         optimizer=optimizer,
-        device=torch.device(f"cuda:{rank}"),
+        device=device,
         is_distributed=True,
         is_main_process=(rank == 0),
     )
@@ -300,7 +302,8 @@ def main_single(config: EBBFConfig, device: torch.device):
     dataloader = instantiate_train_dataloader(config, distributed=False, num_workers=num_workers)
     logger.info("DataLoader initialized, workers starting to prefetch batches...")
 
-    model = instantiate_model(config)
+    model = instantiate_model(config, device=device)
+    model = model.to(device)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
