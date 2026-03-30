@@ -96,6 +96,8 @@ def main():
             tx_path = os.path.join(zarr_dir, "points/transcripts")
     tx_dataset = ds.dataset(tx_path, format="parquet")
     stdata = STDataset.load(dataset)
+    config.n_genes = stdata.genes.shape[0]
+    config.n_ctypes = 1
     curr_bboxes = np.array_split(stdata.boxes, n_workers)[worker_id]
 
     # Set column names based on input format
