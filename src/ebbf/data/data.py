@@ -40,7 +40,6 @@ def instantiate_train_dataloader(
         pin_memory=True,
         shuffle=False,
         collate_fn=collate_fn,
-        in_order=False,
         num_workers=num_workers,
         multiprocessing_context=("fork" if (distributed and num_workers > 0) else None),
         sampler=sampler,
