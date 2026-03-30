@@ -220,6 +220,9 @@ class TxPatchDataset(IterableDataset):
             )
         self.seeds = {x: (i + 100) for i, x in enumerate(self.patch_coords)}
 
+    def __len__(self):
+        return len(self.patch_coords)
+
     def _get_patch_bounds(
         self, box_idx: int, patch_i: int, patch_j: int
     ) -> tuple[float, float, float, float]:

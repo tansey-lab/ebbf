@@ -12,7 +12,7 @@ def main():
         nargs="+",
         help="Input parquet files from inference",
     )
-    parser.add_argument("--tma", type=str, required=True, help="Path to stdata.npz file")
+    parser.add_argument("--dataset", type=str, required=True, help="Path to stdata.npz file")
     parser.add_argument(
         "--cluster_distance",
         type=float,
@@ -45,12 +45,12 @@ def main():
     )
     args = parser.parse_args()
 
-    tma = STDataset.load(args.tma)
+    stdata = STDataset.load(args.dataset)
     anndata_fname = args.anndata_output if args.anndata_output else None
     post_process(
         input_files=args.input_files,
         work_dir=args.work_dir,
-        tma=tma,
+        dataset=stdata,
         cluster_distance=args.cluster_distance,
         output_fname=args.output,
         anndata_fname=anndata_fname,

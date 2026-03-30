@@ -36,18 +36,20 @@ workflow EBBF {
     ch_versions = ch_versions.mix(EBBF_PREPROCESS.out.versions.first())
 
     //
-    // STEP 2: Train - Train the model using TMA (config from params)
-    // Skip training if model_weights is provided (inference-only mode)
+    // STEP 2: Train or skip
+    // model_weights + resume_training  -> train with --resume_from
+    // model_weights + !resume_training -> skip training, use weights directly
+    // !model_weights                   -> train from scratch
     //
-    if (params.model_weights) {
-        // Use pre-trained model weights, skip training
-        ch_model = EBBF_PREPROCESS.out.tma
-            .map { meta, tma -> [ meta, file(params.model_weights) ] }
+    if (params.model_weights && !params.resume_training) {
+        // Skip training, use provided weights directly for inference
+        ch_weights = EBBF_PREPROCESS.out.dataset
+            .map { meta, dataset -> [ meta, file(params.model_weights) ] }
     } else {
-        // Train the model
-        EBBF_TRAIN(EBBF_PREPROCESS.out.tma)
+        // Train the model (optionally resuming from model_weights)
+        EBBF_TRAIN(EBBF_PREPROCESS.out.dataset)
         ch_versions = ch_versions.mix(EBBF_TRAIN.out.versions.first())
-        ch_model = EBBF_TRAIN.out.model
+        ch_weights = EBBF_TRAIN.out.weights
     }
 
     //
@@ -55,12 +57,12 @@ workflow EBBF {
     // Transcripts are derived from zarr_dir: points/transcripts/
     // Generate worker channels for parallel inference
     //
-    ch_infer_input = ch_model
-        .join(EBBF_PREPROCESS.out.tma)
+    ch_infer_input = ch_weights
+        .join(EBBF_PREPROCESS.out.dataset)
         .join(ch_samplesheet)
         .combine(Channel.of(0..<params.n_infer_workers))
-        .map { meta, model_dir, tma, zarr_dir, worker_id ->
-            [ meta, model_dir, tma, zarr_dir, params.n_infer_workers, worker_id ]
+        .map { meta, weights, dataset, zarr_dir, worker_id ->
+            [ meta, weights, dataset, zarr_dir, params.n_infer_workers, worker_id ]
         }
 
     EBBF_INFER(ch_infer_input)
@@ -75,7 +77,7 @@ workflow EBBF {
         .map { meta, parquet_list ->
             [ meta, parquet_list.flatten() ]
         }
-        .join(EBBF_PREPROCESS.out.tma)
+        .join(EBBF_PREPROCESS.out.dataset)
 
     EBBF_POSTPROCESS(ch_postprocess_input)
     ch_versions = ch_versions.mix(EBBF_POSTPROCESS.out.versions.first())

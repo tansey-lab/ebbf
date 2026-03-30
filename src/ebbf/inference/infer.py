@@ -6,7 +6,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import ChainDataset, DataLoader
+from torch.utils.data import DataLoader
 from torchdiffeq import odeint
 from tqdm import tqdm
 
@@ -101,7 +101,7 @@ class FlowInference:
 
 
 def infer(
-    dataset: TxPatchDataset | ChainDataset,
+    dataset: TxPatchDataset,
     flow_inference: FlowInference,
     batch_size: int,
 ):

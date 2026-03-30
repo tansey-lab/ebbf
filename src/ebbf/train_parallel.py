@@ -4,7 +4,6 @@ import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
-import torch.multiprocessing as mp
 import wandb
 from omegaconf import OmegaConf
 from torch.distributed import destroy_process_group, init_process_group
@@ -53,6 +52,7 @@ class Trainer:
         train_dataloader: DataLoader,
         optimizer: torch.optim.Optimizer,
         device: torch.device,
+        output_dir: str,
         is_distributed: bool = False,
         is_main_process: bool = True,
     ) -> None:
@@ -102,7 +102,7 @@ class Trainer:
                     mode=wandb_mode,
                 )
 
-            self.output_dir = config.output_folder
+            self.output_dir = output_dir
             os.makedirs(self.output_dir, exist_ok=True)
 
             ## Save out the configurations
@@ -242,12 +242,20 @@ class Trainer:
             self._save_checkpoint(self.n_epochs - 1)
 
 
-def main_distributed(rank: int, world_size: int, config: EBBFConfig):
+def main_distributed(
+    rank: int,
+    world_size: int,
+    config: EBBFConfig,
+    dataset_path: str,
+    output_dir: str,
+    resume_from: str | None = None,
+):
     """Distributed training entry point (multi-GPU)."""
     ddp_setup(rank, world_size)
     num_workers = config.train.num_workers
     dataloader = instantiate_train_dataloader(
         config,
+        dataset_path=dataset_path,
         distributed=True,
         num_workers=num_workers,
         world_size=world_size,
@@ -255,7 +263,7 @@ def main_distributed(rank: int, world_size: int, config: EBBFConfig):
     )
 
     device = torch.device(f"cuda:{rank}")
-    model = instantiate_model(config, device=device)
+    model = instantiate_model(config, device=device, checkpoint_path=resume_from)
     model = model.to(device)
 
     optimizer = torch.optim.AdamW(
@@ -267,8 +275,8 @@ def main_distributed(rank: int, world_size: int, config: EBBFConfig):
 
     # Restore optimizer state and get start epoch if resuming from checkpoint
     start_epoch = 0
-    if config.get("model_initialization"):
-        ckpt = torch.load(config.model_initialization, map_location=device)
+    if resume_from:
+        ckpt = torch.load(resume_from, map_location=device)
         if "optimizer" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer"])
             if rank == 0:
@@ -284,6 +292,7 @@ def main_distributed(rank: int, world_size: int, config: EBBFConfig):
         train_dataloader=dataloader,
         optimizer=optimizer,
         device=device,
+        output_dir=output_dir,
         is_distributed=True,
         is_main_process=(rank == 0),
     )
@@ -291,7 +300,13 @@ def main_distributed(rank: int, world_size: int, config: EBBFConfig):
     destroy_process_group()
 
 
-def main_single(config: EBBFConfig, device: torch.device):
+def main_single(
+    config: EBBFConfig,
+    device: torch.device,
+    dataset_path: str,
+    output_dir: str,
+    resume_from: str | None = None,
+):
     """Single-process training entry point (CPU or single GPU)."""
     num_workers = config.train.num_workers
 
@@ -299,10 +314,12 @@ def main_single(config: EBBFConfig, device: torch.device):
         f"Initializing DataLoader with {num_workers} workers, "
         f"max_tx={config.data.max_tx}, dataset_size={config.data.dataset_size}"
     )
-    dataloader = instantiate_train_dataloader(config, distributed=False, num_workers=num_workers)
+    dataloader = instantiate_train_dataloader(
+        config, dataset_path=dataset_path, distributed=False, num_workers=num_workers
+    )
     logger.info("DataLoader initialized, workers starting to prefetch batches...")
 
-    model = instantiate_model(config, device=device)
+    model = instantiate_model(config, device=device, checkpoint_path=resume_from)
     model = model.to(device)
 
     optimizer = torch.optim.AdamW(
@@ -314,8 +331,8 @@ def main_single(config: EBBFConfig, device: torch.device):
 
     # Restore optimizer state and get start epoch if resuming from checkpoint
     start_epoch = 0
-    if config.get("model_initialization"):
-        ckpt = torch.load(config.model_initialization, map_location=device)
+    if resume_from:
+        ckpt = torch.load(resume_from, map_location=device)
         if "optimizer" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer"])
             logger.info("Restored optimizer state from checkpoint")
@@ -329,6 +346,7 @@ def main_single(config: EBBFConfig, device: torch.device):
         train_dataloader=dataloader,
         optimizer=optimizer,
         device=device,
+        output_dir=output_dir,
         is_distributed=False,
         is_main_process=True,
     )
@@ -337,33 +355,3 @@ def main_single(config: EBBFConfig, device: torch.device):
 
 # Keep old name for backwards compatibility
 main = main_distributed
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, help="Config filename.")
-    args = parser.parse_args()
-
-    # Load YAML and merge with structured config schema for validation
-    schema = OmegaConf.structured(EBBFConfig)
-    yaml_config = OmegaConf.load(args.config)
-    config = OmegaConf.merge(schema, yaml_config)
-
-    if config.get("prev_model_folder"):
-        prev_model_folder = config.prev_model_folder
-        uconfig = OmegaConf.load(os.path.join(prev_model_folder, "config.yaml"))
-        uconfig.model_initialization = os.path.join(prev_model_folder, "chkpoint.pt")
-        uconfig.data.tma_fname = os.path.join(prev_model_folder, "stdata.npz")
-        config = OmegaConf.merge(uconfig, config)
-
-    world_size = torch.cuda.device_count()
-    if world_size > 1:
-        mp.spawn(main_distributed, args=(world_size, config), nprocs=world_size)
-    elif world_size == 1:
-        logger.info("Found 1 CUDA device, using single-GPU training...")
-        main_single(config, torch.device("cuda:0"))
-    else:
-        logger.info("No CUDA devices found, running on CPU...")
-        main_single(config, torch.device("cpu"))

@@ -16,9 +16,6 @@ from omegaconf import MISSING
 class DataConfig:
     """Configuration for data loading and preprocessing."""
 
-    tma_fname: str = MISSING
-    """Path to the STDataset file (.npz)."""
-
     patch_size: int = 100
     """Size of patches to extract from the data."""
 
@@ -191,10 +188,7 @@ class EBBFConfig:
     Example YAML config:
         experiment_name: my_experiment
         seed: 100
-        output_folder: ./output
-
         data:
-          tma_fname: /path/to/stdata.npz
           patch_size: 100
           ...
 
@@ -221,9 +215,6 @@ class EBBFConfig:
     seed: int = 100
     """Random seed for reproducibility."""
 
-    output_folder: str = MISSING
-    """Output directory for checkpoints and logs."""
-
     data: DataConfig = field(default_factory=DataConfig)
     """Data loading and preprocessing configuration."""
 
@@ -245,10 +236,6 @@ class EBBFConfig:
 
     n_ctypes: int = 1
     """Number of cell types (set dynamically from data)."""
-
-    # Optional fields for resuming/continuing training
-    model_initialization: str | None = None
-    """Path to checkpoint file to initialize model from."""
 
     prev_model_folder: str | None = None
     """Path to previous model folder for continuing training."""

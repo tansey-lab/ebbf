@@ -22,7 +22,8 @@ def main():
     torch.set_default_dtype(torch.float32)
 
     parser = argparse.ArgumentParser(description="Run EBB&Flow inference")
-    parser.add_argument("--model_directory", type=str, required=True, help="Model directory")
+    parser.add_argument("--config", type=str, required=True, help="Path to config YAML file")
+    parser.add_argument("--weights", type=str, required=True, help="Path to model checkpoint file")
     parser.add_argument(
         "--zarr_dir",
         type=str,
@@ -32,10 +33,10 @@ def main():
     parser.add_argument("--n_workers", type=int, required=True, help="Number of workers")
     parser.add_argument("--worker_id", type=int, required=True, help="Current worker id")
     parser.add_argument(
-        "--tma_fname",
+        "--dataset",
         type=str,
-        default=None,
-        help="STDataset filename (overrides config)",
+        required=True,
+        help="Path to STDataset file (.npz)",
     )
     parser.add_argument(
         "--output_dir",
@@ -58,11 +59,12 @@ def main():
     )
     args = parser.parse_args()
 
-    model_directory: str = args.model_directory
+    config_path: str = args.config
+    weights_path: str = args.weights
     zarr_dir: str = args.zarr_dir
     n_workers: int = args.n_workers
     worker_id: int = args.worker_id
-    tma_fname: str | None = args.tma_fname
+    dataset: str = args.dataset
     output_dir: str = args.output_dir
     overwrite: bool = bool(args.overwrite)
     input_format: str | None = args.input_format
@@ -76,7 +78,7 @@ def main():
         logger.warning("File exists and we are not overwriting. Exiting now...")
         sys.exit(0)
 
-    config = OmegaConf.load(os.path.join(model_directory, "config.yaml"))
+    config = OmegaConf.load(config_path)
 
     # Detect or use provided input format
     if input_format is None:
@@ -93,8 +95,10 @@ def main():
         else:
             tx_path = os.path.join(zarr_dir, "points/transcripts")
     tx_dataset = ds.dataset(tx_path, format="parquet")
-    tma = STDataset.load(tma_fname if tma_fname else config.data.tma_fname)
-    curr_bboxes = np.array_split(tma.boxes, n_workers)[worker_id]
+    stdata = STDataset.load(dataset)
+    config.n_genes = stdata.genes.shape[0]
+    config.n_ctypes = 1
+    curr_bboxes = np.array_split(stdata.boxes, n_workers)[worker_id]
 
     # Set column names based on input format
     if input_format == "xenium":
@@ -105,21 +109,21 @@ def main():
     dataset = TxPatchDataset(
         boxes=curr_bboxes,
         tx_dataset=tx_dataset,
-        nuc_xy=tma.nuc_xy,
-        genes=tma.genes,
+        nuc_xy=stdata.nuc_xy,
+        genes=stdata.genes,
         patch_size=config.data.patch_size,
         patch_padding=config.data.patch_size,
         overlap=20,  # x_overlap = y_overlap
         max_tx=config.data.max_tx,
         shuffle=True,
-        nuc_ellipse_mat=tma.nuc_ellipse_mat,
-        nuc_ctype=np.zeros_like(tma.nuc_ctype_idx),
+        nuc_ellipse_mat=stdata.nuc_ellipse_mat,
+        nuc_ctype=np.zeros_like(stdata.nuc_ctype_idx),
         x_col=x_col,
         y_col=y_col,
     )
 
     # Load in the model
-    state_dict = torch.load(os.path.join(model_directory, "chkpoint.pt"), map_location="cpu")
+    state_dict = torch.load(weights_path, map_location="cpu")
     model = instantiate_model(config)
     model.train(False)
     model.load_state_dict(state_dict["model"])

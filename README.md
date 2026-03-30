@@ -89,15 +89,7 @@ ebbf-preprocess \
 Train the flow matching model:
 
 ```bash
-ebbf-train --config configs/example.yaml
-```
-
-Update the config file to point to your preprocessed data:
-
-```yaml
-data:
-  tma_fname: /path/to/output/stdata.npz
-  # ... other settings
+ebbf-train --config configs/example.yaml --dataset /path/to/output/stdata.npz
 ```
 
 ### 3. Infer
@@ -106,8 +98,10 @@ Run inference to assign transcripts:
 
 ```bash
 ebbf-infer \
-    --model_directory /path/to/trained_model \
-    --transcripts_fname /path/to/transcripts.parquet \
+    --config /path/to/config.yaml \
+    --weights /path/to/chkpoint.pt \
+    --dataset /path/to/stdata.npz \
+    --zarr_dir /path/to/spatialdata.zarr \
     --n_workers 4 \
     --worker_id 0
 ```
@@ -131,7 +125,6 @@ See `configs/example.yaml` for a full configuration example. Key settings:
 
 ```yaml
 data:
-  tma_fname: /path/to/stdata.npz # Preprocessed data
   patch_size: 100 # Spatial patch size
   max_tx: 32768 # Max transcripts per batch
 

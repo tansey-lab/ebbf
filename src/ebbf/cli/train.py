@@ -19,11 +19,12 @@ def main():
 
     parser = argparse.ArgumentParser(description="Train EBB&Flow model")
     parser.add_argument("--config", type=str, required=True, help="Path to config YAML file")
+    parser.add_argument("--dataset", type=str, required=True, help="Path to STDataset file (.npz)")
     parser.add_argument(
         "--output_dir",
         type=str,
-        default=None,
-        help="Output directory (overrides config.output_folder)",
+        required=True,
+        help="Output directory for checkpoints and logs",
     )
     parser.add_argument(
         "--resume_from",
@@ -38,28 +39,28 @@ def main():
     yaml_config = OmegaConf.load(args.config)
     config = OmegaConf.merge(schema, yaml_config)
 
-    # Override output_folder if provided via CLI
-    if args.output_dir is not None:
-        config.output_folder = args.output_dir
-
-    # Set resume checkpoint path (used by instantiate_model and for optimizer/epoch restore)
-    if args.resume_from is not None:
-        config.model_initialization = args.resume_from
+    dataset_path: str = args.dataset
+    output_dir: str = args.output_dir
+    resume_from: str | None = args.resume_from
 
     if config.get("prev_model_folder"):
         prev_model_folder = config.prev_model_folder
         uconfig = OmegaConf.load(os.path.join(prev_model_folder, "config.yaml"))
-        uconfig.model_initialization = os.path.join(prev_model_folder, "chkpoint.pt")
-        uconfig.data.tma_fname = os.path.join(prev_model_folder, "stdata.npz")
         config = OmegaConf.merge(uconfig, config)
+        if resume_from is None:
+            resume_from = os.path.join(prev_model_folder, "chkpoint.pt")
 
     world_size = torch.cuda.device_count()
     if world_size > 1:
         logger.info("Found %d CUDA device(s), using distributed training...", world_size)
-        mp.spawn(main_distributed, args=(world_size, config), nprocs=world_size)
+        mp.spawn(
+            main_distributed,
+            args=(world_size, config, dataset_path, output_dir, resume_from),
+            nprocs=world_size,
+        )
     elif world_size == 1:
         logger.info("Found 1 CUDA device, using single-GPU training...")
-        main_single(config, torch.device("cuda:0"))
+        main_single(config, torch.device("cuda:0"), dataset_path, output_dir, resume_from)
     else:
         logger.info("No CUDA devices found, running on CPU...")
-        main_single(config, torch.device("cpu"))
+        main_single(config, torch.device("cpu"), dataset_path, output_dir, resume_from)

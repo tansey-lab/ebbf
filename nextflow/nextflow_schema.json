@@ -41,19 +41,19 @@
                     "description": "MultiQC report title. Printed as page header, used for filename if not otherwise specified.",
                     "fa_icon": "fas fa-file-signature"
                 },
-                "resume_from_weights": {
-                    "type": "string",
-                    "format": "file-path",
-                    "description": "Path to a .pt checkpoint file to initialize/resume training from.",
-                    "help_text": "Use this option to fine-tune from a pre-trained model or resume training from a checkpoint. The training process will continue from these weights.",
-                    "fa_icon": "fas fa-file"
-                },
                 "model_weights": {
                     "type": "string",
-                    "format": "directory-path",
-                    "description": "Path to a model directory to skip training entirely (inference-only mode).",
-                    "help_text": "Use this option to skip training and run inference directly with pre-trained weights. The directory must contain both config.yaml and chkpoint.pt files (typically the output from a previous training run).",
-                    "fa_icon": "fas fa-folder"
+                    "format": "file-path",
+                    "description": "Path to a .pt weights file.",
+                    "help_text": "When resume_training is false (default), skips training and uses these weights directly for inference. When resume_training is true, resumes training from these weights.",
+                    "fa_icon": "fas fa-file"
+                },
+                "resume_training": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Resume training from model_weights instead of skipping training.",
+                    "help_text": "Only applies when model_weights is set. When true, runs training with --resume_from pointing to the provided weights. When false, skips training entirely.",
+                    "fa_icon": "fas fa-redo"
                 }
             }
         },

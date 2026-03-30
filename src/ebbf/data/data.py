@@ -10,17 +10,18 @@ from ebbf.data.st_dataset import STDataset
 
 def instantiate_train_dataloader(
     config: EBBFConfig,
+    dataset_path: str,
     distributed: bool,
     num_workers: int,
     world_size: int | None = None,
     rank: int | None = None,
 ):
 
-    tma = STDataset.load(config.data.tma_fname)
-    config.n_genes = tma.genes.shape[0]
+    stdata = STDataset.load(dataset_path)
+    config.n_genes = stdata.genes.shape[0]
     config.n_ctypes = 1
 
-    dataset = tma.get_nuc_dataset(
+    dataset = stdata.get_nuc_dataset(
         patch_size=config.data.patch_size,
         patch_padding=config.data.patch_padding,
         dataset_size=int(config.data.dataset_size),

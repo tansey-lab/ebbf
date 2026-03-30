@@ -7,7 +7,7 @@ process EBBF_TRAIN {
     maxRetries 3
 
     input:
-    tuple val(meta), path(tma)
+    tuple val(meta), path(dataset)
 
     // Stage checkpoint from persistent location before task starts (for retries)
     beforeScript {
@@ -34,6 +34,7 @@ process EBBF_TRAIN {
 
     output:
     tuple val(meta), path("model_output"), emit: model
+    tuple val(meta), path("model_output/chkpoint.pt"), emit: weights
     path "versions.yml"                  , emit: versions
 
     script:
@@ -41,19 +42,19 @@ process EBBF_TRAIN {
     def attn_res = params.attn_resolutions.tokenize(',').collect { it.trim() as int }
     def chan_mult = params.channel_mult.tokenize(',').collect { it.trim() as int }
     def wandb_key = params.wandb_api_key ?: ''
-    def initial_weights = params.resume_from_weights ?: ''
+    def model_weights = params.model_weights ?: ''
     """
     mkdir -p model_output
 
     # Check for checkpoint staged by beforeScript from previous attempt
-    # Priority: prev_checkpoint.pt (retry) > resume_from_weights (user-provided)
+    # Priority: prev_checkpoint.pt (retry) > model_weights (user-provided)
     RESUME_FLAG=""
     if [ -f "prev_checkpoint.pt" ]; then
         RESUME_FLAG="--resume_from prev_checkpoint.pt"
         echo "Resuming from staged checkpoint (attempt ${task.attempt})"
-    elif [ -n "${initial_weights}" ]; then
-        RESUME_FLAG="--resume_from ${initial_weights}"
-        echo "Initializing from user-provided weights: ${initial_weights}"
+    elif [ -n "${model_weights}" ]; then
+        RESUME_FLAG="--resume_from ${model_weights}"
+        echo "Resuming from provided weights: ${model_weights}"
     fi
 
     # Generate config from params
@@ -62,7 +63,6 @@ experiment_name: ${params.experiment_name}
 seed: ${params.seed}
 
 data:
-  tma_fname: ${tma}
   patch_size: ${params.patch_size}
   patch_padding: ${params.patch_padding}
   max_tx: ${params.max_tx}
@@ -112,8 +112,6 @@ train:
   num_workers: ${params.train_num_workers}
   wandb_enabled: ${params.wandb_enabled}
 
-output_folder: model_output
-
 infer:
   tx_fname: null
   batch_size: ${params.infer_batch_size}
@@ -132,7 +130,7 @@ EOFCONFIG
     export WANDB_RUN_ID="${workflow.runName}_${meta.id}"
     export WANDB_RESUME="allow"
 
-    ebbf-train --config train_config.yaml \$RESUME_FLAG
+    ebbf-train --config train_config.yaml --dataset ${dataset} --output_dir model_output \$RESUME_FLAG
 
     cat <<-END_VERSIONS > versions.yml
 "${task.process}":

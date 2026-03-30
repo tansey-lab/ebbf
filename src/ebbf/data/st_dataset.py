@@ -423,7 +423,7 @@ def process_zarr(
     # No cell types - set all to 0
     nuc_ctype_idx = np.zeros(len(nuc_cell_id), dtype=np.int64)
 
-    tma = STDataset(
+    stdata = STDataset(
         boxes=boxes,
         nuc_cell_id=nuc_cell_id,
         nuc_total_tx_counts=nuc_total_tx_counts,
@@ -440,7 +440,7 @@ def process_zarr(
         cell_triangle_probs=cell_triangle_probs,
     )
 
-    return tma
+    return stdata
 
 
 class STDataset:

@@ -6,7 +6,7 @@ process EBBF_PREPROCESS {
     tuple val(meta), path(zarr_dir)
 
     output:
-    tuple val(meta), path("stdata.npz"), emit: tma
+    tuple val(meta), path("stdata.npz"), emit: dataset
     path "versions.yml"             , emit: versions
 
     script:
