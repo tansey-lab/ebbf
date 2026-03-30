@@ -54,6 +54,13 @@
                     "description": "Resume training from model_weights instead of skipping training.",
                     "help_text": "Only applies when model_weights is set. When true, runs training with --resume_from pointing to the provided weights. When false, skips training entirely.",
                     "fa_icon": "fas fa-redo"
+                },
+                "limit_h200_nodes": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Limit GPU jobs to known H200 nodes (iscn003, iscn004).",
+                    "help_text": "When enabled, adds --nodelist=iscn003,iscn004 to SLURM GPU cluster options. Automatically set by the mskcc_iris_h200 profile.",
+                    "fa_icon": "fas fa-server"
                 }
             }
         },
