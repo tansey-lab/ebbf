@@ -7,7 +7,7 @@ process EBBF_TRAIN {
     maxRetries 3
 
     input:
-    tuple val(meta), path(tma)
+    tuple val(meta), path(dataset)
 
     // Stage checkpoint from persistent location before task starts (for retries)
     beforeScript {
@@ -62,7 +62,6 @@ experiment_name: ${params.experiment_name}
 seed: ${params.seed}
 
 data:
-  tma_fname: ${tma}
   patch_size: ${params.patch_size}
   patch_padding: ${params.patch_padding}
   max_tx: ${params.max_tx}
@@ -132,7 +131,7 @@ EOFCONFIG
     export WANDB_RUN_ID="${workflow.runName}_${meta.id}"
     export WANDB_RESUME="allow"
 
-    ebbf-train --config train_config.yaml \$RESUME_FLAG
+    ebbf-train --config train_config.yaml --dataset ${dataset} \$RESUME_FLAG
 
     cat <<-END_VERSIONS > versions.yml
 "${task.process}":

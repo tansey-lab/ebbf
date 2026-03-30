@@ -16,9 +16,6 @@ from omegaconf import MISSING
 class DataConfig:
     """Configuration for data loading and preprocessing."""
 
-    tma_fname: str = MISSING
-    """Path to the STDataset file (.npz)."""
-
     patch_size: int = 100
     """Size of patches to extract from the data."""
 
@@ -194,7 +191,6 @@ class EBBFConfig:
         output_folder: ./output
 
         data:
-          tma_fname: /path/to/stdata.npz
           patch_size: 100
           ...
 

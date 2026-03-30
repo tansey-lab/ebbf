@@ -242,12 +242,13 @@ class Trainer:
             self._save_checkpoint(self.n_epochs - 1)
 
 
-def main_distributed(rank: int, world_size: int, config: EBBFConfig):
+def main_distributed(rank: int, world_size: int, config: EBBFConfig, dataset_path: str):
     """Distributed training entry point (multi-GPU)."""
     ddp_setup(rank, world_size)
     num_workers = config.train.num_workers
     dataloader = instantiate_train_dataloader(
         config,
+        dataset_path=dataset_path,
         distributed=True,
         num_workers=num_workers,
         world_size=world_size,
@@ -291,7 +292,7 @@ def main_distributed(rank: int, world_size: int, config: EBBFConfig):
     destroy_process_group()
 
 
-def main_single(config: EBBFConfig, device: torch.device):
+def main_single(config: EBBFConfig, device: torch.device, dataset_path: str):
     """Single-process training entry point (CPU or single GPU)."""
     num_workers = config.train.num_workers
 
@@ -299,7 +300,9 @@ def main_single(config: EBBFConfig, device: torch.device):
         f"Initializing DataLoader with {num_workers} workers, "
         f"max_tx={config.data.max_tx}, dataset_size={config.data.dataset_size}"
     )
-    dataloader = instantiate_train_dataloader(config, distributed=False, num_workers=num_workers)
+    dataloader = instantiate_train_dataloader(
+        config, dataset_path=dataset_path, distributed=False, num_workers=num_workers
+    )
     logger.info("DataLoader initialized, workers starting to prefetch batches...")
 
     model = instantiate_model(config, device=device)
@@ -344,6 +347,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, help="Config filename.")
+    parser.add_argument("--dataset", type=str, required=True, help="Path to STDataset file (.npz)")
     args = parser.parse_args()
 
     # Load YAML and merge with structured config schema for validation
@@ -351,19 +355,20 @@ if __name__ == "__main__":
     yaml_config = OmegaConf.load(args.config)
     config = OmegaConf.merge(schema, yaml_config)
 
+    dataset_path: str = args.dataset
+
     if config.get("prev_model_folder"):
         prev_model_folder = config.prev_model_folder
         uconfig = OmegaConf.load(os.path.join(prev_model_folder, "config.yaml"))
         uconfig.model_initialization = os.path.join(prev_model_folder, "chkpoint.pt")
-        uconfig.data.tma_fname = os.path.join(prev_model_folder, "stdata.npz")
         config = OmegaConf.merge(uconfig, config)
 
     world_size = torch.cuda.device_count()
     if world_size > 1:
-        mp.spawn(main_distributed, args=(world_size, config), nprocs=world_size)
+        mp.spawn(main_distributed, args=(world_size, config, dataset_path), nprocs=world_size)
     elif world_size == 1:
         logger.info("Found 1 CUDA device, using single-GPU training...")
-        main_single(config, torch.device("cuda:0"))
+        main_single(config, torch.device("cuda:0"), dataset_path)
     else:
         logger.info("No CUDA devices found, running on CPU...")
-        main_single(config, torch.device("cpu"))
+        main_single(config, torch.device("cpu"), dataset_path)

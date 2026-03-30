@@ -51,5 +51,5 @@ if __name__ == "__main__":
     tx_df.sink_parquet(points_fname)
 
     # Process the zarr directory
-    tma = process_zarr(zarr_dir=zarr_dir)
-    tma.save(os.path.join(output_folder, "stdata.npz"))
+    stdata = process_zarr(zarr_dir=zarr_dir)
+    stdata.save(os.path.join(output_folder, "stdata.npz"))

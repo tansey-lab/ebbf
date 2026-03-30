@@ -422,7 +422,7 @@ def create_anndata(
 
 def post_process(
     input_files: list[str],
-    tma: STDataset,
+    dataset: STDataset,
     cluster_distance: float,
     output_fname: str = "ef.parquet",
     anndata_fname: str | None = "ef.h5ad",
@@ -438,7 +438,7 @@ def post_process(
     os.makedirs(work_dir, exist_ok=True)
 
     ## Get mappings for genes
-    idx2genes = {i: x for i, x in enumerate(tma.genes)}
+    idx2genes = {i: x for i, x in enumerate(dataset.genes)}
 
     ## Step 1: Make tx unique
     logger.info("Step 1: getting unique tx...")
@@ -485,9 +485,9 @@ def post_process(
     map_clusters_to_cells(
         input_path=temp_path4,
         output_path=output_fname,
-        nuc_centroid=tma.nuc_xy,
-        nuc_ellipse_mat=tma.nuc_ellipse_mat,
-        nuc_cell_id=tma.nuc_cell_id,
+        nuc_centroid=dataset.nuc_xy,
+        nuc_ellipse_mat=dataset.nuc_ellipse_mat,
+        nuc_cell_id=dataset.nuc_cell_id,
     )
 
     ## Remove fourth intermediate file
@@ -515,7 +515,7 @@ if __name__ == "__main__":
         nargs="+",
         help="Input parquet files from inference",
     )
-    parser.add_argument("--tma", type=str, required=True, help="Path to stdata.npz file")
+    parser.add_argument("--dataset", type=str, required=True, help="Path to stdata.npz file")
     parser.add_argument(
         "--cluster_distance",
         type=float,
@@ -536,12 +536,12 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    tma = STDataset.load(args.tma)
+    stdata = STDataset.load(args.dataset)
 
     post_process(
         input_files=args.input_files,
         work_dir=args.work_dir,
-        tma=tma,
+        dataset=stdata,
         cluster_distance=args.cluster_distance,
         output_fname=args.output,
     )

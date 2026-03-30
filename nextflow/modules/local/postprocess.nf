@@ -3,7 +3,7 @@ process EBBF_POSTPROCESS {
     label 'process_medium'
 
     input:
-    tuple val(meta), path(parquet_files), path(tma_file)
+    tuple val(meta), path(parquet_files), path(dataset_file)
 
     output:
     tuple val(meta), path("*.parquet"), emit: results
@@ -17,7 +17,7 @@ process EBBF_POSTPROCESS {
     """
     ebbf-postprocess \\
         ${parquet_files} \\
-        --tma ${tma_file} \\
+        --dataset ${dataset_file} \\
         --cluster_distance ${params.cluster_distance} \\
         --output ${prefix}.parquet \\
         --anndata_output ${prefix}.h5ad \\

@@ -4,7 +4,7 @@ process EBBF_INFER {
     label 'process_gpu'
 
     input:
-    tuple val(meta), path(model_dir), path(tma), path(zarr_dir), val(n_workers), val(worker_id)
+    tuple val(meta), path(model_dir), path(dataset), path(zarr_dir), val(n_workers), val(worker_id)
 
     output:
     tuple val(meta), path("part-*.parquet"), emit: results
@@ -16,7 +16,7 @@ process EBBF_INFER {
     """
     ebbf-infer \\
         --model_directory ${model_dir} \\
-        --tma_fname ${tma} \\
+        --dataset ${dataset} \\
         --zarr_dir ${zarr_dir} \\
         --n_workers ${n_workers} \\
         --worker_id ${worker_id} \\

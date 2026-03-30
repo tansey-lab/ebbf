@@ -32,10 +32,10 @@ def main():
     )
     args = parser.parse_args()
 
-    tma = process_zarr(
+    stdata = process_zarr(
         zarr_dir=args.zarr_dir,
         box_width=args.box_width,
         input_format=args.input_format,
     )
-    tma.save(args.output)
+    stdata.save(args.output)
     logger.info("Saved STDataset to %s", args.output)
