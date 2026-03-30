@@ -4,7 +4,6 @@ import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
-import torch.multiprocessing as mp
 import wandb
 from omegaconf import OmegaConf
 from torch.distributed import destroy_process_group, init_process_group
@@ -53,6 +52,7 @@ class Trainer:
         train_dataloader: DataLoader,
         optimizer: torch.optim.Optimizer,
         device: torch.device,
+        output_dir: str,
         is_distributed: bool = False,
         is_main_process: bool = True,
     ) -> None:
@@ -102,7 +102,7 @@ class Trainer:
                     mode=wandb_mode,
                 )
 
-            self.output_dir = config.output_folder
+            self.output_dir = output_dir
             os.makedirs(self.output_dir, exist_ok=True)
 
             ## Save out the configurations
@@ -242,7 +242,9 @@ class Trainer:
             self._save_checkpoint(self.n_epochs - 1)
 
 
-def main_distributed(rank: int, world_size: int, config: EBBFConfig, dataset_path: str):
+def main_distributed(
+    rank: int, world_size: int, config: EBBFConfig, dataset_path: str, output_dir: str
+):
     """Distributed training entry point (multi-GPU)."""
     ddp_setup(rank, world_size)
     num_workers = config.train.num_workers
@@ -285,6 +287,7 @@ def main_distributed(rank: int, world_size: int, config: EBBFConfig, dataset_pat
         train_dataloader=dataloader,
         optimizer=optimizer,
         device=device,
+        output_dir=output_dir,
         is_distributed=True,
         is_main_process=(rank == 0),
     )
@@ -292,7 +295,7 @@ def main_distributed(rank: int, world_size: int, config: EBBFConfig, dataset_pat
     destroy_process_group()
 
 
-def main_single(config: EBBFConfig, device: torch.device, dataset_path: str):
+def main_single(config: EBBFConfig, device: torch.device, dataset_path: str, output_dir: str):
     """Single-process training entry point (CPU or single GPU)."""
     num_workers = config.train.num_workers
 
@@ -332,6 +335,7 @@ def main_single(config: EBBFConfig, device: torch.device, dataset_path: str):
         train_dataloader=dataloader,
         optimizer=optimizer,
         device=device,
+        output_dir=output_dir,
         is_distributed=False,
         is_main_process=True,
     )
@@ -340,35 +344,3 @@ def main_single(config: EBBFConfig, device: torch.device, dataset_path: str):
 
 # Keep old name for backwards compatibility
 main = main_distributed
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, help="Config filename.")
-    parser.add_argument("--dataset", type=str, required=True, help="Path to STDataset file (.npz)")
-    args = parser.parse_args()
-
-    # Load YAML and merge with structured config schema for validation
-    schema = OmegaConf.structured(EBBFConfig)
-    yaml_config = OmegaConf.load(args.config)
-    config = OmegaConf.merge(schema, yaml_config)
-
-    dataset_path: str = args.dataset
-
-    if config.get("prev_model_folder"):
-        prev_model_folder = config.prev_model_folder
-        uconfig = OmegaConf.load(os.path.join(prev_model_folder, "config.yaml"))
-        uconfig.model_initialization = os.path.join(prev_model_folder, "chkpoint.pt")
-        config = OmegaConf.merge(uconfig, config)
-
-    world_size = torch.cuda.device_count()
-    if world_size > 1:
-        mp.spawn(main_distributed, args=(world_size, config, dataset_path), nprocs=world_size)
-    elif world_size == 1:
-        logger.info("Found 1 CUDA device, using single-GPU training...")
-        main_single(config, torch.device("cuda:0"), dataset_path)
-    else:
-        logger.info("No CUDA devices found, running on CPU...")
-        main_single(config, torch.device("cpu"), dataset_path)

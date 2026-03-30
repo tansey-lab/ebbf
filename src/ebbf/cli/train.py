@@ -23,8 +23,8 @@ def main():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default=None,
-        help="Output directory (overrides config.output_folder)",
+        required=True,
+        help="Output directory for checkpoints and logs",
     )
     parser.add_argument(
         "--resume_from",
@@ -39,15 +39,12 @@ def main():
     yaml_config = OmegaConf.load(args.config)
     config = OmegaConf.merge(schema, yaml_config)
 
-    # Override output_folder if provided via CLI
-    if args.output_dir is not None:
-        config.output_folder = args.output_dir
-
     # Set resume checkpoint path (used by instantiate_model and for optimizer/epoch restore)
     if args.resume_from is not None:
         config.model_initialization = args.resume_from
 
     dataset_path: str = args.dataset
+    output_dir: str = args.output_dir
 
     if config.get("prev_model_folder"):
         prev_model_folder = config.prev_model_folder
@@ -58,10 +55,12 @@ def main():
     world_size = torch.cuda.device_count()
     if world_size > 1:
         logger.info("Found %d CUDA device(s), using distributed training...", world_size)
-        mp.spawn(main_distributed, args=(world_size, config, dataset_path), nprocs=world_size)
+        mp.spawn(
+            main_distributed, args=(world_size, config, dataset_path, output_dir), nprocs=world_size
+        )
     elif world_size == 1:
         logger.info("Found 1 CUDA device, using single-GPU training...")
-        main_single(config, torch.device("cuda:0"), dataset_path)
+        main_single(config, torch.device("cuda:0"), dataset_path, output_dir)
     else:
         logger.info("No CUDA devices found, running on CPU...")
-        main_single(config, torch.device("cpu"), dataset_path)
+        main_single(config, torch.device("cpu"), dataset_path, output_dir)

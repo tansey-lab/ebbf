@@ -111,8 +111,6 @@ train:
   num_workers: ${params.train_num_workers}
   wandb_enabled: ${params.wandb_enabled}
 
-output_folder: model_output
-
 infer:
   tx_fname: null
   batch_size: ${params.infer_batch_size}
@@ -131,7 +129,7 @@ EOFCONFIG
     export WANDB_RUN_ID="${workflow.runName}_${meta.id}"
     export WANDB_RESUME="allow"
 
-    ebbf-train --config train_config.yaml --dataset ${dataset} \$RESUME_FLAG
+    ebbf-train --config train_config.yaml --dataset ${dataset} --output_dir model_output \$RESUME_FLAG
 
     cat <<-END_VERSIONS > versions.yml
 "${task.process}":

@@ -188,8 +188,6 @@ class EBBFConfig:
     Example YAML config:
         experiment_name: my_experiment
         seed: 100
-        output_folder: ./output
-
         data:
           patch_size: 100
           ...
@@ -216,9 +214,6 @@ class EBBFConfig:
 
     seed: int = 100
     """Random seed for reproducibility."""
-
-    output_folder: str = MISSING
-    """Output directory for checkpoints and logs."""
 
     data: DataConfig = field(default_factory=DataConfig)
     """Data loading and preprocessing configuration."""
