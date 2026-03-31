@@ -83,7 +83,15 @@ def filter_unique_and_remap_tx(input_path: str | list[str], output_path: str, id
     df = df.join(min_vals, how="inner", on=["tx_idx", "tx_dist"])
 
     ## Rename to be consistent with everything else
-    df = df.rename({"tx_idx": "transcript_id", "tx_x": "x", "tx_y": "y"})
+    df = df.rename(
+        {
+            "tx_idx": "transcript_id",
+            "tx_x": "x",
+            "tx_y": "y",
+            "tx_initial_x": "x_initial",
+            "tx_initial_y": "y_initial",
+        }
+    )
 
     ## Replace gene indices with gene names
     df = df.with_columns(
@@ -348,6 +356,8 @@ def map_clusters_to_cells(
             "cell_id",
             "x",
             "y",
+            "x_initial",
+            "y_initial",
             "centroid_distance",
             "mahalanobis_distance",
             "ef_cluster_id",
@@ -374,7 +384,7 @@ def calculate_tx_distances(
     output_path: str,
     original_tx_fname: str,
 ):
-    """Compute distances between reassigned and original transcript positions.
+    """Enrich transcript table with overlaps_nucleus and distance to original position.
 
     Args:
         input_path: Path to the cluster-to-cell mapped parquet file
@@ -384,14 +394,15 @@ def calculate_tx_distances(
     ## Read in data
     df = pl.scan_parquet(input_path)
 
-    ## Read in original tx data
+    ## Read in original tx data for overlaps_nucleus
     tx_df = pl.scan_parquet(original_tx_fname)
-    tx_df = tx_df.select(["transcript_id", "x", "y", "overlaps_nucleus"])
-    tx_df = tx_df.rename({"x": "x_initial", "y": "y_initial"})
+    tx_df = tx_df.select(["transcript_id", "overlaps_nucleus"])
 
     ## Merge current data with original
     df = df.with_columns(pl.col("transcript_id").cast(pl.UInt64))
     df = df.join(tx_df, on="transcript_id", how="inner")
+
+    ## Compute distance between diffused and original positions
     df = df.with_columns(
         distance=(
             (pl.col("x") - pl.col("x_initial")).pow(2) + (pl.col("y") - pl.col("y_initial")).pow(2)

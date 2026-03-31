@@ -7,6 +7,7 @@ process EBBF_PREPROCESS {
 
     output:
     tuple val(meta), path("stdata.npz"), emit: dataset
+    tuple val(meta), path("transcripts.parquet"), emit: transcripts
     path "versions.yml"             , emit: versions
 
     script:
@@ -16,6 +17,7 @@ process EBBF_PREPROCESS {
     ebbf-preprocess \\
         --zarr_dir ${zarr_dir} \\
         --output stdata.npz \\
+        --transcripts_output transcripts.parquet \\
         ${args}
 
     cat <<-END_VERSIONS > versions.yml

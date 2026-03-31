@@ -14,7 +14,7 @@ process EBBF_POSTPROCESS {
     def args = task.ext.args ?: ''
     def prefix = task.ext.prefix ?: "${meta.id}"
     def cd_cutoff = params.cd_cutoff ?: 2.0
-    def orig_tx_arg = original_transcripts.name != 'NO_FILE' ? "--original_transcripts ${original_transcripts}" : ''
+    def orig_tx_arg = "--original_transcripts ${original_transcripts}"
     """
     ebbf-postprocess \\
         ${parquet_files} \\
