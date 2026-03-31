@@ -369,50 +369,265 @@ def map_clusters_to_cells(
 ##############
 
 
+def calculate_tx_distances(
+    input_path: str,
+    output_path: str,
+    original_tx_fname: str,
+):
+    """Compute distances between reassigned and original transcript positions.
+
+    Args:
+        input_path: Path to the cluster-to-cell mapped parquet file
+        output_path: Path to write the enriched parquet file
+        original_tx_fname: Path to the original transcripts parquet file
+    """
+    ## Read in data
+    df = pl.scan_parquet(input_path)
+
+    ## Read in original tx data
+    tx_df = pl.scan_parquet(original_tx_fname)
+    tx_df = tx_df.select(["transcript_id", "x", "y", "overlaps_nucleus"])
+    tx_df = tx_df.rename({"x": "x_initial", "y": "y_initial"})
+
+    ## Merge current data with original
+    df = df.with_columns(pl.col("transcript_id").cast(pl.UInt64))
+    df = df.join(tx_df, on="transcript_id", how="inner")
+    df = df.with_columns(
+        distance=(
+            (pl.col("x") - pl.col("x_initial")).pow(2) + (pl.col("y") - pl.col("y_initial")).pow(2)
+        ).sqrt()
+    )
+
+    ## Write it out
+    df.sink_parquet(output_path)
+    return "Success!"
+
+
+###############
+###############
+
+
+###############
+### STEP 7 ###
+##############
+
+
+def _create_anndata_from_lazyframe(
+    ldf: pl.LazyFrame,
+    cell_id2idx: dict,
+    cell_id_col: str = "cell_id",
+    gene_col: str = "feature_name",
+):
+    """Build an AnnData count matrix from a transcript LazyFrame.
+
+    Args:
+        ldf: LazyFrame with transcript-level data
+        cell_id2idx: Mapping from cell identifiers to row indices
+        cell_id_col: Column name for cell identifiers
+        gene_col: Column name for gene/feature names
+    """
+    cell_ids = list(cell_id2idx.keys())
+    sub_ldf = ldf.filter(pl.col(cell_id_col).is_in(cell_ids))
+
+    X = sub_ldf.group_by([cell_id_col, gene_col]).len(name="count").collect().to_pandas()
+
+    row_idx = X[cell_id_col].map(cell_id2idx).values
+    row_mask = ~np.isnan(row_idx)
+
+    genes = X[gene_col].unique()
+    gene2idx = {x: i for i, x in enumerate(genes)}
+    col_idx = X[gene_col].map(gene2idx).values
+    col_mask = ~np.isnan(col_idx)
+
+    ## Filter out the nans
+    mask = row_mask & col_mask
+    row_idx = row_idx[mask].astype(int)
+    col_idx = col_idx[mask].astype(int)
+
+    counts = X["count"].values[mask]
+    n_genes = max(gene2idx.values()) + 1
+    n_cells = max(cell_id2idx.values()) + 1
+
+    mat = csr_matrix((counts, (row_idx, col_idx)), shape=(n_cells, n_genes))
+
+    ## Genes
+    idx2gene = {v: k for k, v in gene2idx.items()}
+    var = pd.DataFrame(index=np.arange(n_genes))
+    var["feature_name"] = var.index.map(idx2gene)
+    var = var.set_index("feature_name")
+
+    ## Cell ids
+    idx2cell_id = {v: k for k, v in cell_id2idx.items()}
+    obs = pd.DataFrame(index=np.arange(n_cells))
+    obs["cell_id"] = obs.index.map(idx2cell_id)
+    obs = obs.set_index("cell_id")
+
+    ## Create anndata object
+    adata = anndata.AnnData(X=mat, var=var, obs=obs)
+    return adata
+
+
 def create_anndata(
     ef_tx_fname: str,
     output_fname: str,
+    dataset: STDataset,
     cd_cutoff: float = 2.0,
 ):
     """Create AnnData file from transcript assignment table.
 
+    Cells are classified into three categories:
+    1. Original cells: mahalanobis_distance <= 1 and centroid_distance <= cd_cutoff
+    2. Split cells: mahalanobis_distance <= 1 and centroid_distance > cd_cutoff
+    3. De novo cells: mahalanobis_distance > 1
+
     Args:
         ef_tx_fname: Path to the transcript assignment parquet file
         output_fname: Path to output h5ad file
-        cd_cutoff: Centroid distance cutoff for filtering transcripts
+        dataset: STDataset with nucleus spatial data
+        cd_cutoff: Centroid distance cutoff for cell classification
     """
-    flow_df = pl.scan_parquet(ef_tx_fname)
+    ## Get relevant spatial locations
+    cell_id2x_centroid = dict(zip(dataset.nuc_cell_id, dataset.nuc_xy[:, 0]))
+    cell_id2y_centroid = dict(zip(dataset.nuc_cell_id, dataset.nuc_xy[:, 1]))
 
-    flow_df = flow_df.filter(
-        (pl.col("centroid_distance") < cd_cutoff) & (pl.col("mahalanobis_distance") <= 1)
+    ## Read in data
+    ldf = pl.scan_parquet(ef_tx_fname)
+
+    # Classify each ef_cluster_id into a cell category at the cluster level
+    cluster_info = (
+        ldf.select(
+            [
+                "ef_cluster_id",
+                "cell_id",
+                "x",
+                "y",
+                "centroid_distance",
+                "mahalanobis_distance",
+            ]
+        )
+        .unique(subset=["ef_cluster_id"])
+        .collect()
     )
-    flow_df = flow_df.with_columns(pl.col("transcript_id").cast(pl.UInt64))
 
-    unique_cell_id = np.sort(flow_df.select(pl.col("cell_id")).unique().collect().to_numpy()[:, 0])
-    unique_genes = np.sort(
-        flow_df.select(pl.col("feature_name")).unique().collect().to_numpy()[:, 0]
-    )
-    cell_id2idx = {x: i for i, x in enumerate(unique_cell_id)}
-    gene2idx = {x: i for i, x in enumerate(unique_genes)}
-    n_cells = unique_cell_id.shape[0]
-    n_genes = unique_genes.shape[0]
-
-    flow_df = flow_df.with_columns(pl.col("cell_id").replace_strict(cell_id2idx).alias("cell_idx"))
-    flow_df = flow_df.with_columns(
-        pl.col("feature_name").replace_strict(gene2idx).alias("gene_idx")
+    # Classify clusters
+    cluster_info = cluster_info.with_columns(
+        [
+            pl.when(pl.col("mahalanobis_distance") > 1)
+            .then(pl.lit("denovo"))
+            .when(pl.col("centroid_distance") > cd_cutoff)
+            .then(pl.lit("split"))
+            .otherwise(pl.lit("original"))
+            .alias("cell_type")
+        ]
     )
 
-    X = flow_df.group_by(["cell_idx", "gene_idx"]).len(name="count").collect().to_pandas()
-    mat = csr_matrix(
-        (X["count"].values, (X["cell_idx"].values, X["gene_idx"].values)),
-        shape=(n_cells, n_genes),
+    # Assign unique cell identifiers
+    # Original: use cell_id directly (multiple clusters merge)
+    # Split: "{cell_id}_split_{ef_cluster_id}"
+    # De novo: "denovo_{ef_cluster_id}"
+    cluster_info = cluster_info.with_columns(
+        [
+            pl.when(pl.col("cell_type") == "original")
+            .then(pl.col("cell_id").cast(pl.Utf8))
+            .when(pl.col("cell_type") == "split")
+            .then(
+                pl.col("cell_id").cast(pl.Utf8)
+                + pl.lit("_split_")
+                + pl.col("ef_cluster_id").cast(pl.Utf8)
+            )
+            .otherwise(pl.lit("denovo_") + pl.col("ef_cluster_id").cast(pl.Utf8))
+            .alias("unified_cell_id")
+        ]
     )
-    var = pd.DataFrame(index=unique_genes)
-    obs = pd.DataFrame(index=unique_cell_id)
 
-    adata = anndata.AnnData(X=mat, var=var, obs=obs)
-    adata.write_h5ad(output_fname)
+    # Build mapping from ef_cluster_id -> unified_cell_id
+    cluster_to_cell = dict(
+        zip(
+            cluster_info["ef_cluster_id"].to_list(),
+            cluster_info["unified_cell_id"].to_list(),
+        )
+    )
 
+    # Build spatial and metadata mappings per unified_cell_id
+    cell_id_to_xy = {}
+    cell_id_to_type_label = {}
+    cell_id_to_parent = {}
+
+    for row in cluster_info.iter_rows(named=True):
+        uid = row["unified_cell_id"]
+        ctype = row["cell_type"]
+
+        if ctype == "original":
+            orig_id = row["cell_id"]
+            cell_id_to_xy[uid] = (
+                cell_id2x_centroid[orig_id],
+                cell_id2y_centroid[orig_id],
+            )
+            cell_id_to_parent[uid] = str(orig_id)
+        elif ctype == "split":
+            cell_id_to_xy[uid] = (row["x"], row["y"])
+            cell_id_to_parent[uid] = str(row["cell_id"])
+        else:  # denovo
+            cell_id_to_xy[uid] = (row["x"], row["y"])
+            cell_id_to_parent[uid] = None
+
+        cell_id_to_type_label[uid] = ctype
+
+    # Annotate transcripts with unified_cell_id via ef_cluster_id join
+    cluster_mapping_df = pl.DataFrame(
+        {
+            "ef_cluster_id": list(cluster_to_cell.keys()),
+            "unified_cell_id": list(cluster_to_cell.values()),
+        }
+    )
+
+    annotated_ldf = ldf.join(
+        cluster_mapping_df.lazy(),
+        on="ef_cluster_id",
+        how="inner",
+    )
+
+    # Build cell_id2idx ensuring all original cells are included
+    all_cell_ids = sorted(
+        set(cell_id_to_xy.keys()) | set(str(k) for k in cell_id2x_centroid.keys())
+    )
+    cell_id2idx = {cid: i for i, cid in enumerate(all_cell_ids)}
+
+    # Populate spatial info and metadata for empty original cells
+    for orig_id in cell_id2x_centroid.keys():
+        uid = str(orig_id)
+        if uid not in cell_id_to_xy:
+            cell_id_to_xy[uid] = (
+                cell_id2x_centroid[orig_id],
+                cell_id2y_centroid[orig_id],
+            )
+            cell_id_to_type_label[uid] = "original"
+            cell_id_to_parent[uid] = uid
+
+    # Build the count matrix
+    adata = _create_anndata_from_lazyframe(
+        annotated_ldf,
+        cell_id2idx=cell_id2idx,
+        cell_id_col="unified_cell_id",
+        gene_col="feature_name",
+    )
+
+    # Add spatial coordinates and metadata to obs
+    adata.obs["cell_category"] = adata.obs.index.map(cell_id_to_type_label)
+    adata.obs["parent_cell_id"] = adata.obs.index.map(cell_id_to_parent)
+    adata.obs["x_centroid"] = adata.obs.index.map(lambda uid: cell_id_to_xy[uid][0])
+    adata.obs["y_centroid"] = adata.obs.index.map(lambda uid: cell_id_to_xy[uid][1])
+    adata.obs["n_tx"] = np.array(adata.X.sum(axis=1)).flatten().astype(int)
+
+    # Store spatial coordinates in obsm for compatibility with spatial analysis tools
+    adata.obsm["spatial"] = np.column_stack(
+        [
+            adata.obs["x_centroid"].values.astype(float),
+            adata.obs["y_centroid"].values.astype(float),
+        ]
+    )
+
+    adata.write(output_fname, compression="lzf")
     return adata
 
 
@@ -427,6 +642,7 @@ def post_process(
     output_fname: str = "ef.parquet",
     anndata_fname: str | None = "ef.h5ad",
     cd_cutoff: float = 2.0,
+    original_tx_fname: str | None = None,
     work_dir: str = ".",
     n_workers: int | None = None,
 ):
@@ -482,9 +698,11 @@ def post_process(
 
     ## Step 5: Map clusters to cells
     logger.info("Step 5: mapping clusters to cells...")
+    temp_fname5 = "temp5-" + uuid.uuid4().hex + ".parquet"
+    temp_path5 = os.path.join(work_dir, temp_fname5)
     map_clusters_to_cells(
         input_path=temp_path4,
-        output_path=output_fname,
+        output_path=temp_path5,
         nuc_centroid=dataset.nuc_xy,
         nuc_ellipse_mat=dataset.nuc_ellipse_mat,
         nuc_cell_id=dataset.nuc_cell_id,
@@ -493,12 +711,27 @@ def post_process(
     ## Remove fourth intermediate file
     remove(temp_path4)
 
-    ## Step 6: Create AnnData file
+    ## Step 6: Compute distances to original positions
+    if original_tx_fname is not None:
+        logger.info("Step 6: computing distances to original positions...")
+        calculate_tx_distances(
+            input_path=temp_path5,
+            output_path=output_fname,
+            original_tx_fname=original_tx_fname,
+        )
+        ## Remove fifth intermediate file
+        remove(temp_path5)
+    else:
+        logger.info("Step 6: skipping distance computation (no original transcripts provided)...")
+        os.rename(temp_path5, output_fname)
+
+    ## Step 7: Create AnnData file
     if anndata_fname is not None:
-        logger.info("Step 6: creating AnnData file...")
+        logger.info("Step 7: creating AnnData file...")
         create_anndata(
             ef_tx_fname=output_fname,
             output_fname=anndata_fname,
+            dataset=dataset,
             cd_cutoff=cd_cutoff,
         )
 
@@ -529,6 +762,12 @@ if __name__ == "__main__":
         help="Output file path (default: ef.parquet)",
     )
     parser.add_argument(
+        "--original_transcripts",
+        type=str,
+        default=None,
+        help="Path to original transcripts parquet file for distance computation",
+    )
+    parser.add_argument(
         "--work_dir",
         type=str,
         default=".",
@@ -544,4 +783,5 @@ if __name__ == "__main__":
         dataset=stdata,
         cluster_distance=args.cluster_distance,
         output_fname=args.output,
+        original_tx_fname=args.original_transcripts,
     )

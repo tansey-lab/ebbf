@@ -38,6 +38,12 @@ def main():
         help="Centroid distance cutoff for AnnData filtering (default: 2.0)",
     )
     parser.add_argument(
+        "--original_transcripts",
+        type=str,
+        default=None,
+        help="Path to original transcripts parquet file for distance computation",
+    )
+    parser.add_argument(
         "--work_dir",
         type=str,
         default=".",
@@ -55,4 +61,5 @@ def main():
         output_fname=args.output,
         anndata_fname=anndata_fname,
         cd_cutoff=args.cd_cutoff,
+        original_tx_fname=args.original_transcripts,
     )
