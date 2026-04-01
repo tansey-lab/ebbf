@@ -31,9 +31,20 @@ workflow EBBF {
 
     //
     // STEP 1: Preprocess - Convert zarr to TMA format
+    // If preprocess_dir is provided, skip preprocessing and use existing files
     //
-    EBBF_PREPROCESS(ch_samplesheet)
-    ch_versions = ch_versions.mix(EBBF_PREPROCESS.out.versions.first())
+    if (params.preprocess_dir) {
+        // Use existing preprocessing outputs
+        ch_dataset = ch_samplesheet
+            .map { meta, zarr_dir -> [ meta, file("${params.preprocess_dir}/stdata.npz") ] }
+        ch_transcripts = ch_samplesheet
+            .map { meta, zarr_dir -> [ meta, file("${params.preprocess_dir}/transcripts.parquet") ] }
+    } else {
+        EBBF_PREPROCESS(ch_samplesheet)
+        ch_versions = ch_versions.mix(EBBF_PREPROCESS.out.versions.first())
+        ch_dataset = EBBF_PREPROCESS.out.dataset
+        ch_transcripts = EBBF_PREPROCESS.out.transcripts
+    }
 
     //
     // STEP 2: Train or skip
@@ -43,11 +54,11 @@ workflow EBBF {
     //
     if (params.model_weights && !params.resume_training) {
         // Skip training, use provided weights directly for inference
-        ch_weights = EBBF_PREPROCESS.out.dataset
+        ch_weights = ch_dataset
             .map { meta, dataset -> [ meta, file(params.model_weights) ] }
     } else {
         // Train the model (optionally resuming from model_weights)
-        EBBF_TRAIN(EBBF_PREPROCESS.out.dataset)
+        EBBF_TRAIN(ch_dataset)
         ch_versions = ch_versions.mix(EBBF_TRAIN.out.versions.first())
         ch_weights = EBBF_TRAIN.out.weights
     }
@@ -58,7 +69,7 @@ workflow EBBF {
     // Generate worker channels for parallel inference
     //
     ch_infer_input = ch_weights
-        .join(EBBF_PREPROCESS.out.dataset)
+        .join(ch_dataset)
         .join(ch_samplesheet)
         .combine(Channel.of(0..<params.n_infer_workers))
         .map { meta, weights, dataset, zarr_dir, worker_id ->
@@ -77,8 +88,8 @@ workflow EBBF {
         .map { meta, parquet_list ->
             [ meta, parquet_list.flatten() ]
         }
-        .join(EBBF_PREPROCESS.out.dataset)
-        .join(EBBF_PREPROCESS.out.transcripts)
+        .join(ch_dataset)
+        .join(ch_transcripts)
         .join(ch_samplesheet)
 
     EBBF_POSTPROCESS(ch_postprocess_input)

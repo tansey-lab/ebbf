@@ -54,6 +54,13 @@
                     "description": "Resume training from model_weights instead of skipping training.",
                     "help_text": "Only applies when model_weights is set. When true, runs training with --resume_from pointing to the provided weights. When false, skips training entirely.",
                     "fa_icon": "fas fa-redo"
+                },
+                "preprocess_dir": {
+                    "type": "string",
+                    "format": "directory-path",
+                    "description": "Path to directory containing preprocessing outputs (stdata.npz and transcripts.parquet).",
+                    "help_text": "When provided, skips the preprocessing step and uses existing files from this directory. The directory must contain 'stdata.npz' and 'transcripts.parquet'. The zarr/xenium input is still required for metadata.",
+                    "fa_icon": "fas fa-folder"
                 }
             }
         },
