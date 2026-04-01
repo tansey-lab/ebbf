@@ -20,6 +20,7 @@ from tqdm import tqdm
 
 from ebbf.compat import get_num_cpus
 from ebbf.data.st_dataset import STDataset
+from ebbf.inference.visualization import visualize_boundaries
 
 logger = logging.getLogger(__name__)
 
@@ -656,6 +657,10 @@ def post_process(
     original_tx_fname: str | None = None,
     work_dir: str = ".",
     n_workers: int | None = None,
+    visualize: bool = False,
+    xenium_dir: str | None = None,
+    viz_output_dir: str | None = None,
+    viz_patch_size: float = 500.0,
 ):
     ## Get number of parallel workers
     if n_workers is None:
@@ -746,6 +751,20 @@ def post_process(
             cd_cutoff=cd_cutoff,
         )
 
+    ## Step 8: Create boundary visualizations
+    if visualize and original_tx_fname is not None:
+        logger.info("Step 8: creating boundary visualizations...")
+        viz_dir = viz_output_dir if viz_output_dir is not None else work_dir
+        visualize_boundaries(
+            ef_tx_fname=output_fname,
+            original_tx_fname=original_tx_fname,
+            output_dir=viz_dir,
+            xenium_dir=xenium_dir,
+            patch_size=viz_patch_size,
+        )
+    elif visualize and original_tx_fname is None:
+        logger.warning("Step 8: skipping visualization (requires --original_transcripts)")
+
     logger.info("DONE!")
 
     return "Success!"
@@ -784,6 +803,29 @@ if __name__ == "__main__":
         default=".",
         help="Directory for temporary files (default: current directory)",
     )
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        help="Generate boundary comparison visualizations",
+    )
+    parser.add_argument(
+        "--xenium_dir",
+        type=str,
+        default=None,
+        help="Path to Xenium output directory for loading default cell boundaries",
+    )
+    parser.add_argument(
+        "--viz_output_dir",
+        type=str,
+        default=None,
+        help="Directory for visualization output files (default: work_dir)",
+    )
+    parser.add_argument(
+        "--viz_patch_size",
+        type=float,
+        default=500.0,
+        help="Size of each visualization patch in microns (default: 500)",
+    )
 
     args = parser.parse_args()
     stdata = STDataset.load(args.dataset)
@@ -795,4 +837,8 @@ if __name__ == "__main__":
         cluster_distance=args.cluster_distance,
         output_fname=args.output,
         original_tx_fname=args.original_transcripts,
+        visualize=args.visualize,
+        xenium_dir=args.xenium_dir,
+        viz_output_dir=args.viz_output_dir,
+        viz_patch_size=args.viz_patch_size,
     )

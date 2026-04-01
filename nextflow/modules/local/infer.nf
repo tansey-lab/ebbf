@@ -44,6 +44,8 @@ train:
 
 infer:
   device: ${params.infer_device}
+  atol: ${params.infer_atol}
+  rtol: ${params.infer_rtol}
 EOFCONFIG
 
     ebbf-infer \\

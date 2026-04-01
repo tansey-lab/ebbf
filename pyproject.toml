@@ -42,6 +42,8 @@ dependencies = [
     "pyarrow",
     "torchdiffeq",
     "scikit-learn",
+    "scikit-image",
+    "matplotlib",
     "rtree",
     "anndata",
 ]

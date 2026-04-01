@@ -145,8 +145,8 @@ def main():
         img_resolution=config.model.img_resolution,
         model=model,
         device=device,
-        atol=1e-5,
-        rtol=1e-5,
+        atol=config.infer.get("atol", 1e-5),
+        rtol=config.infer.get("rtol", 1e-5),
     )
 
     # Run inference

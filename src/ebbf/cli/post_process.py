@@ -49,6 +49,29 @@ def main():
         default=".",
         help="Directory for temporary files (default: current directory)",
     )
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        help="Generate boundary comparison visualizations",
+    )
+    parser.add_argument(
+        "--xenium_dir",
+        type=str,
+        default=None,
+        help="Path to Xenium output directory for loading default cell boundaries",
+    )
+    parser.add_argument(
+        "--viz_output_dir",
+        type=str,
+        default=None,
+        help="Directory for visualization output files (default: work_dir)",
+    )
+    parser.add_argument(
+        "--viz_patch_size",
+        type=float,
+        default=500.0,
+        help="Size of each visualization patch in microns (default: 500)",
+    )
     args = parser.parse_args()
 
     stdata = STDataset.load(args.dataset)
@@ -62,4 +85,8 @@ def main():
         anndata_fname=anndata_fname,
         cd_cutoff=args.cd_cutoff,
         original_tx_fname=args.original_transcripts,
+        visualize=args.visualize,
+        xenium_dir=args.xenium_dir,
+        viz_output_dir=args.viz_output_dir,
+        viz_patch_size=args.viz_patch_size,
     )

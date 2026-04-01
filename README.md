@@ -13,12 +13,45 @@ pip install -e .
 ## Pipeline Overview
 
 ```
-SpatialData Zarr  →  Preprocess  →  Train  →  Infer  →  Post-process  →  Assignments
+Xenium Data  →  Preprocess  →  Train  →  Infer  →  Post-process  →  Assignments
 ```
 
-### Input: SpatialData Zarr Directory
+### Supported Input Formats
 
-EBB&Flow expects a [SpatialData](https://spatialdata.scverse.org/) zarr directory with the following structure:
+EBB&Flow supports two input formats for Xenium spatial transcriptomics data:
+
+#### 1. Xenium Ranger Output Directory
+
+Direct output from the 10x Genomics Xenium instrument:
+
+```
+xenium_output/
+├── transcripts.parquet           # Transcript locations
+├── nucleus_boundaries.parquet    # Nucleus polygons (required)
+├── cell_boundaries.parquet       # Cell polygons (optional)
+└── ...
+```
+
+**Required columns in `transcripts.parquet`:**
+| Column | Type | Description |
+|--------|------|-------------|
+| `x_location` | float | X coordinate |
+| `y_location` | float | Y coordinate |
+| `feature_name` | string | Gene/feature name |
+| `cell_id` | string | Cell ID (can be "UNASSIGNED") |
+| `overlaps_nucleus` | int | 1 if transcript overlaps a nucleus |
+| `is_gene` | bool | True for gene transcripts |
+
+**Required columns in `nucleus_boundaries.parquet` / `cell_boundaries.parquet`:**
+| Column | Type | Description |
+|--------|------|-------------|
+| `cell_id` | string | Cell ID |
+| `vertex_x` | float | X coordinate of polygon vertex |
+| `vertex_y` | float | Y coordinate of polygon vertex |
+
+#### 2. SpatialData Zarr Directory
+
+A [SpatialData](https://spatialdata.scverse.org/) zarr directory (e.g., converted via `spatialdata-io`):
 
 ```
 my_data.zarr/
@@ -48,6 +81,8 @@ my_data.zarr/
 |--------|------|-------------|
 | `geometry` | Polygon | Shapely polygon geometry |
 | (index) | string | Cell ID matching `cell_id` in transcripts |
+
+> **Note:** The input format is automatically detected based on directory structure.
 
 ### Output
 
@@ -114,10 +149,34 @@ Aggregate and finalize assignments:
 
 ```bash
 ebbf-postprocess \
-    --model_directory /path/to/trained_model \
-    --tma_directory /path/to/output \
-    --cluster_distance 1.5
+    inference_output/*.parquet \
+    --dataset /path/to/stdata.npz \
+    --output ef.parquet \
+    --anndata_output ef.h5ad \
+    --cluster_distance 1.5 \
+    --original_transcripts /path/to/transcripts.parquet
 ```
+
+**Optional: Generate boundary comparison visualizations:**
+
+```bash
+ebbf-postprocess \
+    inference_output/*.parquet \
+    --dataset /path/to/stdata.npz \
+    --original_transcripts /path/to/transcripts.parquet \
+    --visualize \
+    --xenium_dir /path/to/xenium_output \
+    --viz_output_dir /path/to/viz_output \
+    --viz_patch_size 500
+```
+
+This generates:
+
+- `boundaries_patch_XXX.pdf` - Full tissue visualization split into patches
+- `boundaries_zoom_*.pdf` - Zoomed views of center regions
+- `cell_boundaries_combined.parquet` - Combined GeoParquet with both segmentations
+
+The `--xenium_dir` argument accepts either Xenium Ranger output or SpatialData zarr directories.
 
 ## Configuration
 
