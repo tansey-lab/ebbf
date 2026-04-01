@@ -440,7 +440,7 @@ def process_zarr(
         cell_triangle_probs=cell_triangle_probs,
     )
 
-    return stdata
+    return stdata, points_folder, column_mapping
 
 
 class STDataset:
