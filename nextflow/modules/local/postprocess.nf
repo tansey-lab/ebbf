@@ -3,11 +3,12 @@ process EBBF_POSTPROCESS {
     label 'process_medium'
 
     input:
-    tuple val(meta), path(parquet_files), path(dataset_file), path(original_transcripts)
+    tuple val(meta), path(parquet_files), path(dataset_file), path(original_transcripts), path(zarr_dir)
 
     output:
     tuple val(meta), path("*.parquet"), emit: results
     tuple val(meta), path("*.h5ad")   , emit: anndata
+    tuple val(meta), path("viz/*.pdf"), emit: visualizations, optional: true
     path "versions.yml"               , emit: versions
 
     script:
@@ -15,7 +16,10 @@ process EBBF_POSTPROCESS {
     def prefix = task.ext.prefix ?: "${meta.id}"
     def cd_cutoff = params.cd_cutoff ?: 2.0
     def orig_tx_arg = "--original_transcripts ${original_transcripts}"
+    def visualize = params.visualize ? "--visualize --xenium_dir ${zarr_dir} --viz_output_dir viz --viz_patch_size ${params.viz_patch_size}" : ""
     """
+    mkdir -p viz
+
     ebbf-postprocess \\
         ${parquet_files} \\
         --dataset ${dataset_file} \\
@@ -25,6 +29,7 @@ process EBBF_POSTPROCESS {
         --cd_cutoff ${cd_cutoff} \\
         --work_dir . \\
         ${orig_tx_arg} \\
+        ${visualize} \\
         ${args}
 
     cat <<-END_VERSIONS > versions.yml

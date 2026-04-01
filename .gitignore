@@ -209,6 +209,7 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 Xenium_Prime_Mouse_Ileum.zarr/
+Xenium_Prime_Mouse_Ileum/
 work/
 results/
 .venv/

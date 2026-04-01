@@ -79,6 +79,7 @@ workflow EBBF {
         }
         .join(EBBF_PREPROCESS.out.dataset)
         .join(EBBF_PREPROCESS.out.transcripts)
+        .join(ch_samplesheet)
 
     EBBF_POSTPROCESS(ch_postprocess_input)
     ch_versions = ch_versions.mix(EBBF_POSTPROCESS.out.versions.first())
@@ -155,6 +156,7 @@ workflow EBBF {
 
     emit:
     postprocess_results = EBBF_POSTPROCESS.out.results
+    visualizations      = EBBF_POSTPROCESS.out.visualizations
     multiqc_report      = MULTIQC.out.report.toList()
     versions            = ch_versions
 
