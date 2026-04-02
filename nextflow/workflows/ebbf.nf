@@ -7,6 +7,7 @@ include { EBBF_PREPROCESS           } from '../modules/local/preprocess'
 include { EBBF_TRAIN                } from '../modules/local/train'
 include { EBBF_INFER                } from '../modules/local/infer'
 include { EBBF_POSTPROCESS          } from '../modules/local/postprocess'
+include { EBBF_REPORTING            } from '../modules/local/reporting'
 include { MULTIQC                   } from '../modules/nf-core/multiqc/main'
 include { paramsSummaryMap          } from 'plugin/nf-schema'
 include { paramsSummaryMultiqc      } from '../subworkflows/nf-core/utils_nfcore_pipeline'
@@ -96,6 +97,20 @@ workflow EBBF {
     ch_versions = ch_versions.mix(EBBF_POSTPROCESS.out.versions.first())
 
     //
+    // STEP 5: Reporting - Generate HTML comparison reports
+    // Can be disabled with --reporting false to save compute time
+    //
+    if (params.reporting) {
+        ch_reporting_input = EBBF_POSTPROCESS.out.anndata
+            .join(EBBF_POSTPROCESS.out.results)
+            .join(ch_transcripts)
+            .join(ch_samplesheet)
+
+        EBBF_REPORTING(ch_reporting_input)
+        ch_versions = ch_versions.mix(EBBF_REPORTING.out.versions.first())
+    }
+
+    //
     // Collate and save software versions
     //
     def topic_versions = Channel.topic("versions")
@@ -167,7 +182,7 @@ workflow EBBF {
 
     emit:
     postprocess_results = EBBF_POSTPROCESS.out.results
-    visualizations      = EBBF_POSTPROCESS.out.visualizations
+    reports             = params.reporting ? EBBF_REPORTING.out.reports : channel.empty()
     multiqc_report      = MULTIQC.out.report.toList()
     versions            = ch_versions
 
