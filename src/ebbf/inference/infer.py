@@ -1,10 +1,12 @@
 import logging
 import os
+import tempfile
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import torch
 from torch.utils.data import DataLoader
 from torchdiffeq import odeint
@@ -100,6 +102,37 @@ class FlowInference:
                 return (batch["tx_idx"], tx_pos[-1], dist)
 
 
+def _batch_to_table(
+    flow_inference: FlowInference,
+    batch: dict[str, torch.Tensor],
+) -> pa.Table:
+    """Run inference on a single batch and return results as an Arrow table."""
+    tx_idx, tx_pos, dist = flow_inference.flow(batch)
+    patch_center = torch.repeat_interleave(
+        batch["patch_center"], repeats=batch["tx_seqlens"], dim=0
+    )
+    tx_initial_pos = (0.5 * flow_inference.patch_size * batch["tx_xy"]) + patch_center
+
+    # Move to numpy in bulk — no per-row Python iteration
+    tx_idx_np = tx_idx.cpu().numpy()
+    tx_pos_np = tx_pos.cpu().numpy()
+    dist_np = dist.cpu().numpy()
+    gene_idx_np = batch["tx_gene_idx"].cpu().numpy()
+    initial_np = tx_initial_pos.cpu().numpy()
+
+    return pa.table(
+        {
+            "tx_idx": tx_idx_np,
+            "tx_x": tx_pos_np[:, 0],
+            "tx_y": tx_pos_np[:, 1],
+            "tx_initial_x": initial_np[:, 0],
+            "tx_initial_y": initial_np[:, 1],
+            "tx_gene_idx": gene_idx_np,
+            "tx_dist": dist_np,
+        }
+    )
+
+
 def infer(
     dataset: TxPatchDataset,
     flow_inference: FlowInference,
@@ -113,44 +146,25 @@ def infer(
         batch_size=batch_size,
         collate_fn=tx_patch_collate_fn,
     )
-    accum = {}
-    for batch in tqdm(dataloader, total=len(dataloader)):
-        tx_idx, tx_pos, dist = flow_inference.flow(batch)
-        patch_center = torch.repeat_interleave(
-            batch["patch_center"], repeats=batch["tx_seqlens"], dim=0
-        )
-        tx_initial_pos = (0.5 * flow_inference.patch_size * batch["tx_xy"]) + patch_center
-        for ii, xy_final, d, gene_idx, xy_initial in zip(
-            tx_idx.cpu().tolist(),
-            tx_pos.cpu().tolist(),
-            dist.cpu().tolist(),
-            batch["tx_gene_idx"].cpu().tolist(),
-            tx_initial_pos.cpu().tolist(),
-        ):
-            if (ii not in accum) or (d < accum[ii]["dist"]):
-                accum[ii] = {
-                    "dist": d,
-                    "xy": xy_final,
-                    "gene_idx": gene_idx,
-                    "xy_initial": xy_initial,
-                }
 
-    tx_idx = np.array(list(accum.keys()))
-    tx_xy = np.array([val["xy"] for val in accum.values()])
-    tx_gene_idx = np.array([val["gene_idx"] for val in accum.values()])
-    tx_xy_initial = np.array([val["xy_initial"] for val in accum.values()])
-    tx_dist = np.array([val["dist"] for val in accum.values()])
+    # Stream batch results to temporary parquet files instead of accumulating in memory
+    tmp_dir = tempfile.mkdtemp(prefix="ebbf_infer_")
+    part_paths = []
+    for batch_i, batch in enumerate(tqdm(dataloader, total=len(dataloader))):
+        table = _batch_to_table(flow_inference, batch)
+        part_path = os.path.join(tmp_dir, f"batch_{batch_i:06d}.parquet")
+        pq.write_table(table, part_path)
+        part_paths.append(part_path)
+        del table
 
-    df = pd.DataFrame(
-        {
-            "tx_idx": tx_idx,
-            "tx_x": tx_xy[:, 0],
-            "tx_y": tx_xy[:, 1],
-            "tx_initial_x": tx_xy_initial[:, 0],
-            "tx_initial_y": tx_xy_initial[:, 1],
-            "tx_gene_idx": tx_gene_idx,
-            "tx_dist": tx_dist,
-        }
-    )
+    # Single-pass dedup: for each tx_idx keep the row with the smallest tx_dist
+    df = pd.read_parquet(tmp_dir)
+    df = df.loc[df.groupby("tx_idx")["tx_dist"].idxmin()]
+    df = df.reset_index(drop=True)
+
+    # Clean up temp files
+    for p in part_paths:
+        os.remove(p)
+    os.rmdir(tmp_dir)
 
     return df
