@@ -13,7 +13,7 @@ import matplotlib
 import numpy as np
 import pandas as pd
 from scipy.interpolate import splev, splprep
-from scipy.stats import gaussian_kde
+from scipy.ndimage import gaussian_filter
 from shapely.geometry import MultiPoint, Polygon
 from skimage.measure import find_contours
 
@@ -73,21 +73,18 @@ def smooth_density_region(
 
     xx = np.linspace(xmin, xmax, grid_size)
     yy = np.linspace(ymin, ymax, grid_size)
-    X, Y = np.meshgrid(xx, yy)
-
-    values = np.vstack([x, y])
 
     if bandwidth is None:
         scale = 0.5 * (np.std(x) + np.std(y))
         bandwidth = max(scale * 0.2, 1e-6)
 
-    kde = gaussian_kde(values)
-    data_scale = np.mean(np.std(values, axis=1))
-    bw_factor = bandwidth / max(data_scale, 1e-12)
-    kde.set_bandwidth(bw_method=bw_factor)
-
-    grid_coords = np.vstack([X.ravel(), Y.ravel()])
-    Z = kde(grid_coords).reshape(X.shape)
+    # Bin points into a 2D histogram, then smooth with a Gaussian filter.
+    # This is O(n + grid^2) vs O(n * grid^2) for direct KDE evaluation.
+    Z, _, _ = np.histogram2d(y, x, bins=[yy, xx])
+    # Convert bandwidth from data-space units to grid-cell units
+    sigma_x = bandwidth / ((xmax - xmin) / grid_size)
+    sigma_y = bandwidth / ((ymax - ymin) / grid_size)
+    Z = gaussian_filter(Z.astype(float), sigma=[sigma_y, sigma_x])
 
     level = threshold_rel * Z.max()
     contours = find_contours(Z, level=level)
@@ -97,8 +94,11 @@ def smooth_density_region(
 
     contour = max(contours, key=len)
     rows, cols = contour[:, 0], contour[:, 1]
-    cx = np.interp(cols, np.arange(grid_size), xx)
-    cy = np.interp(rows, np.arange(grid_size), yy)
+    # Histogram has grid_size-1 bins; map contour indices to bin centers
+    bin_centers_x = 0.5 * (xx[:-1] + xx[1:])
+    bin_centers_y = 0.5 * (yy[:-1] + yy[1:])
+    cx = np.interp(cols, np.arange(grid_size - 1), bin_centers_x)
+    cy = np.interp(rows, np.arange(grid_size - 1), bin_centers_y)
     boundary = np.column_stack([cx, cy])
 
     if np.linalg.norm(boundary[0] - boundary[-1]) > 1e-9:
