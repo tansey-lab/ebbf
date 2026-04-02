@@ -47,6 +47,8 @@ dependencies = [
     "rtree",
     "anndata",
     "scanpy",
+    "igraph",
+    "leidenalg",
     "spatialdata-io",
 ]
 

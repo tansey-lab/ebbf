@@ -94,8 +94,17 @@ def _compute_diff_adata(adata_ebbf, adata_default):
     # PCA, UMAP, clustering
     logger.info("Running PCA, UMAP, clustering on diff matrix...")
     sc.pp.scale(adata_diff, max_value=10)
-    sc.tl.pca(adata_diff, n_comps=30)
-    sc.pp.neighbors(adata_diff, n_neighbors=15, n_pcs=30)
+    n_comps = min(30, adata_diff.n_obs, adata_diff.n_vars) - 1
+    if n_comps < 2:
+        logger.warning(
+            f"Too few cells/genes for PCA ({adata_diff.n_obs} cells, {adata_diff.n_vars} genes). "
+            "Skipping PCA/UMAP/clustering on diff matrix."
+        )
+        return adata_diff, X_diff, genes, shared_ids
+    logger.info(f"  Using n_comps={n_comps} (cells={adata_diff.n_obs}, genes={adata_diff.n_vars})")
+    sc.tl.pca(adata_diff, n_comps=n_comps)
+    n_neighbors = min(15, adata_diff.n_obs - 1)
+    sc.pp.neighbors(adata_diff, n_neighbors=n_neighbors, n_pcs=n_comps)
     sc.tl.umap(adata_diff)
 
     for res in [0.25, 0.5, 1.0]:
@@ -109,7 +118,8 @@ def _compute_diff_adata(adata_ebbf, adata_default):
         logger.info(f"  Leiden res={res}: {adata_diff.obs[f'leiden_{res}'].nunique()} clusters")
 
     sc.tl.rank_genes_groups(adata_diff, groupby="leiden_0.5", method="wilcoxon")
-    sc.tl.dendrogram(adata_diff, groupby="leiden_0.5")
+    if adata_diff.obs["leiden_0.5"].nunique() > 2:
+        sc.tl.dendrogram(adata_diff, groupby="leiden_0.5")
 
     return adata_diff, X_diff, genes, shared_ids
 
@@ -739,37 +749,54 @@ def generate_diff_report(adata_diff, X_diff, genes, shared_ids, output_dir):
         "ACTB",
     ]
     key_genes = [g for g in key_genes if g in genes]
+    # Fall back to top marker genes if none of the hardcoded genes are present
+    if not key_genes and "rank_genes_groups" in adata_diff.uns:
+        result = adata_diff.uns["rank_genes_groups"]
+        seen = set()
+        for g in result["names"].dtype.names:
+            for name in result["names"][g][:5]:
+                if name not in seen:
+                    key_genes.append(name)
+                    seen.add(name)
+        key_genes = key_genes[:15]
 
     raw_diff = adata_diff.layers["raw_diff"]
     if issparse(raw_diff):
         raw_diff = raw_diff.toarray()
 
     clusters = sorted(adata_diff.obs["leiden_0.5"].unique(), key=int)
-    cluster_means = []
-    for cl in clusters:
-        mask = (adata_diff.obs["leiden_0.5"] == cl).values
-        means = raw_diff[mask][:, [genes.index(g) for g in key_genes]].mean(axis=0)
-        cluster_means.append(means)
 
-    cm = np.array(cluster_means)
-    im = ax.imshow(
-        cm.T,
-        cmap="RdBu_r",
-        aspect="auto",
-        vmin=-np.percentile(np.abs(cm), 95),
-        vmax=np.percentile(np.abs(cm), 95),
-    )
-    ax.set_xticks(range(len(clusters)))
-    ax.set_xticklabels(
-        [f"Cluster {c}\n(n={(adata_diff.obs['leiden_0.5'] == c).sum():,})" for c in clusters],
-        fontsize=8,
-    )
-    ax.set_yticks(range(len(key_genes)))
-    ax.set_yticklabels(key_genes, fontsize=9)
-    ax.set_title("Mean Transcript Gain/Loss per Cluster (key genes)", fontsize=13)
-    plt.colorbar(im, ax=ax, label="Mean diff (EBBF − Default)", shrink=0.8)
-    plt.tight_layout()
-    images["cluster_gene_heatmap"] = _fig_to_base64(fig)
+    if not key_genes:
+        logger.warning("No key genes available for cluster gene heatmap, skipping.")
+        plt.close(fig)
+    else:
+        cluster_means = []
+        for cl in clusters:
+            mask = (adata_diff.obs["leiden_0.5"] == cl).values
+            means = raw_diff[mask][:, [genes.index(g) for g in key_genes]].mean(axis=0)
+            cluster_means.append(means)
+
+        cm = np.array(cluster_means)
+        abs_cm = np.abs(cm)
+        vbound = np.percentile(abs_cm, 95) if abs_cm.size > 0 else 1.0
+        im = ax.imshow(
+            cm.T,
+            cmap="RdBu_r",
+            aspect="auto",
+            vmin=-vbound,
+            vmax=vbound,
+        )
+        ax.set_xticks(range(len(clusters)))
+        ax.set_xticklabels(
+            [f"Cluster {c}\n(n={(adata_diff.obs['leiden_0.5'] == c).sum():,})" for c in clusters],
+            fontsize=8,
+        )
+        ax.set_yticks(range(len(key_genes)))
+        ax.set_yticklabels(key_genes, fontsize=9)
+        ax.set_title("Mean Transcript Gain/Loss per Cluster (key genes)", fontsize=13)
+        plt.colorbar(im, ax=ax, label="Mean diff (EBBF − Default)", shrink=0.8)
+        plt.tight_layout()
+        images["cluster_gene_heatmap"] = _fig_to_base64(fig)
 
     # 5. Per-cluster stats
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
@@ -847,8 +874,9 @@ def generate_diff_report(adata_diff, X_diff, genes, shared_ids, output_dir):
     # 7. Marker gene table
     result = adata_diff.uns["rank_genes_groups"]
     groups = result["names"].dtype.names
+    n_marker_genes = min(15, len(result["names"][groups[0]])) if groups else 0
     marker_rows = []
-    for i in range(15):
+    for i in range(n_marker_genes):
         row = {}
         for g in groups:
             row[f"{g}_gene"] = result["names"][g][i]
@@ -928,7 +956,7 @@ with similar patterns of transcript reassignment.</p>
 <div class="section">
 <h2>Cluster Characterization</h2>
 <p>What genes define each diff cluster? This heatmap shows mean gain/loss per gene per cluster.</p>
-<img src="data:image/png;base64,{images["cluster_gene_heatmap"]}">
+{'<img src="data:image/png;base64,' + images["cluster_gene_heatmap"] + '">' if "cluster_gene_heatmap" in images else "<p><em>Gene heatmap not available (no matching key genes).</em></p>"}
 <br>
 <img src="data:image/png;base64,{images["cluster_stats"]}">
 </div>
@@ -1478,11 +1506,18 @@ def reporting(
     adata_diff.write_h5ad(diff_path)
     logger.info(f"Saved {diff_path}")
 
-    generate_diff_report(adata_diff, X_diff, genes, shared_ids, output_dir)
+    has_clustering = "leiden_0.5" in adata_diff.obs
+    if has_clustering:
+        generate_diff_report(adata_diff, X_diff, genes, shared_ids, output_dir)
+    else:
+        logger.warning("Step 3: skipping diff report (too few cells/genes for clustering)")
 
     # Step 4: Choropleth clusters
-    logger.info("Step 4: generating choropleth clusters report...")
-    gdf_boundaries = sd.shapes["cell_boundaries"]
-    generate_choropleth_report(adata_diff, gdf_boundaries, output_dir)
+    if has_clustering:
+        logger.info("Step 4: generating choropleth clusters report...")
+        gdf_boundaries = sd.shapes["cell_boundaries"]
+        generate_choropleth_report(adata_diff, gdf_boundaries, output_dir)
+    else:
+        logger.warning("Step 4: skipping choropleth report (too few cells/genes for clustering)")
 
     logger.info("DONE! All reports generated.")
