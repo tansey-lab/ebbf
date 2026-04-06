@@ -189,12 +189,9 @@ def double_grid_and_group(
 
             ## Phase 2: stream input in batches, write per-partition chunks to staging
             file_counts: dict[int, int] = {}
-            reader = pl.read_parquet_batched(input_path)
-            while True:
-                batches = reader.next_batches(1)
-                if batches is None:
-                    break
-                batch = batches[0]
+            parquet_file = pq.ParquetFile(input_path)
+            for record_batch in parquet_file.iter_batches():
+                batch = pl.from_arrow(record_batch)
 
                 batch = _add_grid_columns(batch, box_width, offset)
                 batch = batch.join(mapping_df, on="grid_name", how="left")
