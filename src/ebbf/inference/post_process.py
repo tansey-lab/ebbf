@@ -3,6 +3,7 @@ import logging
 import multiprocessing as mp
 import os
 import shutil
+import tempfile
 import uuid
 
 import anndata
@@ -133,27 +134,16 @@ def group_labels_min_size(x, s):
     return labels
 
 
-def grid_group_lazyframe(ldf: pl.LazyFrame, box_width: float, min_size: int, offset: float):
-
-    grid_ldf = ldf.with_columns(
-        [
-            ((pl.col("x") / box_width) + offset).floor().cast(pl.Int32).alias("grid_x"),
-            ((pl.col("y") / box_width) + offset).floor().cast(pl.Int32).alias("grid_y"),
-        ]
-    )
-
-    grid_ldf = grid_ldf.with_columns(
+def _add_grid_columns(df: pl.DataFrame, box_width: float, offset: float) -> pl.DataFrame:
+    """Add grid_x, grid_y, and grid_name columns to a DataFrame."""
+    return df.with_columns(
+        ((pl.col("x") / box_width) + offset).floor().cast(pl.Int32).alias("grid_x"),
+        ((pl.col("y") / box_width) + offset).floor().cast(pl.Int32).alias("grid_y"),
+    ).with_columns(
         (pl.col("grid_x").cast(pl.String) + "_" + pl.col("grid_y").cast(pl.String)).alias(
             "grid_name"
         )
     )
-    counts = grid_ldf.group_by(["grid_name"]).len().collect().to_pandas().sort_values(by="len")
-    counts["label"] = group_labels_min_size(counts["len"].values, min_size)
-    grid_name2label = dict(zip(counts["grid_name"], counts["label"]))
-    grid_ldf = grid_ldf.with_columns(
-        pl.col("grid_name").replace_strict(grid_name2label).alias("super_grid_label")
-    )
-    return grid_ldf
 
 
 def double_grid_and_group(
@@ -166,20 +156,77 @@ def double_grid_and_group(
 
     ## Ensure box_width is large enough
     box_width = max(box_width, 2 * cluster_distance)
+    os.makedirs(output_path, exist_ok=True)
 
-    ## Read data
-    df = pl.scan_parquet(input_path)
+    ## Stage part files in a temp directory inside output_path;
+    ## TemporaryDirectory ensures cleanup on error.
+    with tempfile.TemporaryDirectory(dir=output_path, prefix=".staging_") as staging_dir:
+        for grid_version, offset in [(0, 0.0), (1, 0.5)]:
+            ## Phase 1: compute grid_name -> super_grid_label mapping (small aggregation)
+            ldf = pl.scan_parquet(input_path)
+            grid_ldf = ldf.with_columns(
+                ((pl.col("x") / box_width) + offset).floor().cast(pl.Int32).alias("grid_x"),
+                ((pl.col("y") / box_width) + offset).floor().cast(pl.Int32).alias("grid_y"),
+            ).with_columns(
+                (pl.col("grid_x").cast(pl.String) + "_" + pl.col("grid_y").cast(pl.String)).alias(
+                    "grid_name"
+                ),
+            )
+            counts = (
+                grid_ldf.group_by("grid_name")
+                .len()
+                .collect(engine="streaming")
+                .to_pandas()
+                .sort_values(by="len")
+            )
+            counts["label"] = group_labels_min_size(counts["len"].values, min_size)
+            mapping_df = pl.DataFrame(
+                {
+                    "grid_name": counts["grid_name"].to_list(),
+                    "super_grid_label": counts["label"].to_list(),
+                }
+            )
 
-    ## Build two offset grids
-    grid_a_df = grid_group_lazyframe(df, box_width=box_width, min_size=min_size, offset=0.0)
-    grid_a_df = grid_a_df.with_columns(pl.lit(0).alias("grid_version"))
-    grid_b_df = grid_group_lazyframe(df, box_width=box_width, min_size=min_size, offset=0.5)
-    grid_b_df = grid_b_df.with_columns(pl.lit(1).alias("grid_version"))
+            ## Phase 2: stream input in batches, write per-partition chunks to staging
+            file_counts: dict[int, int] = {}
+            parquet_file = pq.ParquetFile(input_path)
+            for record_batch in parquet_file.iter_batches():
+                batch = pl.from_arrow(record_batch)
 
-    ## Concatenate grids and save, partitioning by grid version and label
-    grid_df = pl.concat([grid_a_df, grid_b_df])
-    out_folder = pl.PartitionBy(output_path, key=["grid_version", "super_grid_label"])
-    grid_df.sink_parquet(out_folder, mkdir=True)
+                batch = _add_grid_columns(batch, box_width, offset)
+                batch = batch.join(mapping_df, on="grid_name", how="left")
+                batch = batch.with_columns(
+                    pl.lit(grid_version).cast(pl.Int32).alias("grid_version"),
+                )
+
+                for group_df in batch.partition_by("super_grid_label"):
+                    label = group_df["super_grid_label"][0]
+                    part_dir = os.path.join(staging_dir, f"gv{grid_version}_sgl{label}")
+                    os.makedirs(part_dir, exist_ok=True)
+                    idx = file_counts.get(label, 0)
+                    group_df.write_parquet(os.path.join(part_dir, f"part-{idx}.parquet"))
+                    file_counts[label] = idx + 1
+
+            ## Phase 3: consolidate each partition into a single file in output_path
+            ## (Step 3 runs DBSCAN per fragment, so each partition must be one file)
+            for label in sorted(file_counts.keys()):
+                staging_part_dir = os.path.join(staging_dir, f"gv{grid_version}_sgl{label}")
+                final_part_dir = os.path.join(
+                    output_path,
+                    f"grid_version={grid_version}",
+                    f"super_grid_label={label}",
+                )
+                os.makedirs(final_part_dir, exist_ok=True)
+                final_path = os.path.join(final_part_dir, "data.parquet")
+                n_parts = file_counts[label]
+                if n_parts == 1:
+                    shutil.move(os.path.join(staging_part_dir, "part-0.parquet"), final_path)
+                else:
+                    part_files = [
+                        os.path.join(staging_part_dir, f"part-{i}.parquet") for i in range(n_parts)
+                    ]
+                    pl.scan_parquet(part_files).sink_parquet(final_path)
+
     return "Success!"
 
 
