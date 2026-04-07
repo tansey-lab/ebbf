@@ -62,6 +62,37 @@ nextflow run nf-core/ebbf --input ./samplesheet.csv --outdir ./results  -profile
 
 This will launch the pipeline with the `docker` configuration profile. See below for more information about profiles.
 
+## Postprocess execution model
+
+Postprocess is executed in three stages to enable Nextflow-level parallelism:
+
+1. `EBBF_POSTPROCESS_PREPARE`
+   - Consumes all inference worker parquet outputs for a sample.
+   - Runs the pre-merge postprocess work (dedup/remap, double-grid clustering, and linked component labeling).
+   - Produces one intermediate Step 4 parquet for that sample.
+2. `EBBF_POSTPROCESS_MAP` (fan-out)
+   - Runs in parallel workers, similar to inference fan-out.
+   - Each worker maps a disjoint shard of `ef_cluster_id` values to cells.
+   - Worker count is controlled by `--n_postprocess_workers`.
+3. `EBBF_POSTPROCESS_MERGE` (fan-in)
+   - Merges map worker outputs.
+   - Runs distance enrichment and AnnData generation.
+   - Emits final parquet/h5ad outputs used by downstream reporting.
+
+### Controlling postprocess fan-out
+
+Use `--n_postprocess_workers` to set the number of parallel map workers, for example:
+
+```bash
+nextflow run nf-core/ebbf \
+  --input ./samplesheet.csv \
+  --outdir ./results \
+  --n_postprocess_workers 8 \
+  -profile docker
+```
+
+If not provided, the pipeline default is `4`.
+
 Note that the pipeline will create the following files in your working directory:
 
 ```bash

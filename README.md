@@ -178,6 +178,23 @@ This generates:
 
 The `--xenium_dir` argument accepts either Xenium Ranger output or SpatialData zarr directories.
 
+## Integration test (mouse ileum)
+
+To run the local integration test on the sample mouse ileum dataset:
+
+```bash
+source .venv/bin/activate
+bash scripts/run_mouse_ileum.sh /Users/quinnj2/Code/ebbf/Xenium_Prime_Mouse_Ileum
+```
+
+If Nextflow reports a session lock error (`Unable to acquire lock on session ...`), identify and stop
+the process holding the lock, then rerun:
+
+```bash
+lsof /Users/quinnj2/Code/ebbf/nextflow/.nextflow/cache/<session-id>/db/LOCK
+kill <PID>
+```
+
 ## Configuration
 
 See `configs/example.yaml` for a full configuration example. Key settings:

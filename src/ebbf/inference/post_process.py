@@ -4,6 +4,7 @@ import multiprocessing as mp
 import os
 import shutil
 import tempfile
+import time
 import uuid
 
 import anndata
@@ -70,6 +71,45 @@ class DBSCANWorker(mp.Process):
             pq.write_table(output_table, out_fname)
 
             self.out_q.put(out_fname)
+
+
+class ClusterMapWorker(mp.Process):
+    def __init__(self, in_q: mp.Queue, out_q: mp.Queue, mapping_df: pl.DataFrame, output_path: str):
+        super().__init__()
+        self.in_q = in_q
+        self.out_q = out_q
+        self.mapping_df = mapping_df
+        self.output_path = output_path
+
+    def run(self):
+        while True:
+            payload = self.in_q.get()
+            if payload is None:
+                break
+
+            batch_idx, record_batch = payload
+            batch = pl.from_arrow(record_batch)
+            mapped = (
+                batch.join(self.mapping_df, on="ef_cluster_id", how="inner")
+                .select(
+                    [
+                        "transcript_id",
+                        "feature_name",
+                        "cell_id",
+                        "x",
+                        "y",
+                        "x_initial",
+                        "y_initial",
+                        "centroid_distance",
+                        "mahalanobis_distance",
+                        "ef_cluster_id",
+                    ]
+                )
+                .to_arrow()
+            )
+            out_fname = os.path.join(self.output_path, f"part-{batch_idx:06d}.parquet")
+            pq.write_table(mapped, out_fname)
+            self.out_q.put((batch_idx, out_fname))
 
 
 ###############
@@ -158,74 +198,54 @@ def double_grid_and_group(
     box_width = max(box_width, 2 * cluster_distance)
     os.makedirs(output_path, exist_ok=True)
 
-    ## Stage part files in a temp directory inside output_path;
-    ## TemporaryDirectory ensures cleanup on error.
-    with tempfile.TemporaryDirectory(dir=output_path, prefix=".staging_") as staging_dir:
-        for grid_version, offset in [(0, 0.0), (1, 0.5)]:
-            ## Phase 1: compute grid_name -> super_grid_label mapping (small aggregation)
-            ldf = pl.scan_parquet(input_path)
-            grid_ldf = ldf.with_columns(
-                ((pl.col("x") / box_width) + offset).floor().cast(pl.Int32).alias("grid_x"),
-                ((pl.col("y") / box_width) + offset).floor().cast(pl.Int32).alias("grid_y"),
-            ).with_columns(
-                (pl.col("grid_x").cast(pl.String) + "_" + pl.col("grid_y").cast(pl.String)).alias(
-                    "grid_name"
-                ),
-            )
-            counts = (
-                grid_ldf.group_by("grid_name")
-                .len()
-                .collect(engine="streaming")
-                .to_pandas()
-                .sort_values(by="len")
-            )
-            counts["label"] = group_labels_min_size(counts["len"].values, min_size)
-            mapping_df = pl.DataFrame(
-                {
-                    "grid_name": counts["grid_name"].to_list(),
-                    "super_grid_label": counts["label"].to_list(),
-                }
-            )
+    for grid_version, offset in [(0, 0.0), (1, 0.5)]:
+        ## Phase 1: compute grid_name -> super_grid_label mapping (small aggregation)
+        ldf = pl.scan_parquet(input_path)
+        counts = (
+            _add_grid_columns(ldf, box_width, offset)
+            .group_by("grid_name")
+            .len()
+            .collect(engine="streaming")
+            .sort(by="len")
+        )
+        labels = group_labels_min_size(counts["len"].to_numpy(), min_size)
+        mapping_df = pl.DataFrame(
+            {
+                "grid_name": counts["grid_name"].to_list(),
+                "super_grid_label": labels,
+            }
+        )
 
-            ## Phase 2: stream input in batches, write per-partition chunks to staging
-            file_counts: dict[int, int] = {}
-            parquet_file = pq.ParquetFile(input_path)
+        ## Phase 2: stream input in batches and append to one file per partition
+        writers: dict[int, pq.ParquetWriter] = {}
+        parquet_file = pq.ParquetFile(input_path)
+        try:
             for record_batch in parquet_file.iter_batches():
                 batch = pl.from_arrow(record_batch)
-
                 batch = _add_grid_columns(batch, box_width, offset)
                 batch = batch.join(mapping_df, on="grid_name", how="left")
                 batch = batch.with_columns(
                     pl.lit(grid_version).cast(pl.Int32).alias("grid_version"),
                 )
 
-                for group_df in batch.partition_by("super_grid_label"):
-                    label = group_df["super_grid_label"][0]
-                    part_dir = os.path.join(staging_dir, f"gv{grid_version}_sgl{label}")
-                    os.makedirs(part_dir, exist_ok=True)
-                    idx = file_counts.get(label, 0)
-                    group_df.write_parquet(os.path.join(part_dir, f"part-{idx}.parquet"))
-                    file_counts[label] = idx + 1
-
-            ## Phase 3: consolidate each partition into a single file in output_path
-            ## (Step 3 runs DBSCAN per fragment, so each partition must be one file)
-            for label in sorted(file_counts.keys()):
-                staging_part_dir = os.path.join(staging_dir, f"gv{grid_version}_sgl{label}")
-                final_part_dir = os.path.join(
-                    output_path,
-                    f"grid_version={grid_version}",
-                    f"super_grid_label={label}",
-                )
-                os.makedirs(final_part_dir, exist_ok=True)
-                final_path = os.path.join(final_part_dir, "data.parquet")
-                n_parts = file_counts[label]
-                if n_parts == 1:
-                    shutil.move(os.path.join(staging_part_dir, "part-0.parquet"), final_path)
-                else:
-                    part_files = [
-                        os.path.join(staging_part_dir, f"part-{i}.parquet") for i in range(n_parts)
-                    ]
-                    pl.scan_parquet(part_files).sink_parquet(final_path)
+                for group_df in batch.partition_by("super_grid_label", maintain_order=False):
+                    label = int(group_df["super_grid_label"][0])
+                    final_part_dir = os.path.join(
+                        output_path,
+                        f"grid_version={grid_version}",
+                        f"super_grid_label={label}",
+                    )
+                    os.makedirs(final_part_dir, exist_ok=True)
+                    final_path = os.path.join(final_part_dir, "data.parquet")
+                    table = group_df.to_arrow()
+                    writer = writers.get(label)
+                    if writer is None:
+                        writer = pq.ParquetWriter(final_path, table.schema)
+                        writers[label] = writer
+                    writer.write_table(table)
+        finally:
+            for writer in writers.values():
+                writer.close()
 
     return "Success!"
 
@@ -349,6 +369,9 @@ def map_clusters_to_cells(
     nuc_centroid: np.ndarray,
     nuc_ellipse_mat: np.ndarray,
     nuc_cell_id: np.ndarray,
+    n_workers: int | None = None,
+    worker_id: int | None = None,
+    worker_n: int | None = None,
 ):
 
     ## Build tree
@@ -373,47 +396,142 @@ def map_clusters_to_cells(
 
     ## Compute mahalanobis distance of cluster to closest centroid ellipse
     diff = cluster_xy - nuc_centroid[centroid_idx]
-    Q = np.linalg.inv(np.matmul(nuc_ellipse_mat, nuc_ellipse_mat.mT))
+    Q = np.linalg.inv(np.matmul(nuc_ellipse_mat, np.swapaxes(nuc_ellipse_mat, -1, -2)))
     mahalanobis_distance = np.sqrt(np.einsum("...i,...ij,...j->...", diff, Q[centroid_idx], diff))
 
-    ## Map everything back onto the lazyframe
-    cluster_id2centroid_cell_id = dict(zip(cluster_id, centroid_cell_id))
-    cluster_id2centroid_distance = dict(zip(cluster_id, centroid_distance))
-    cluster_id2mahalanobis_distance = dict(zip(cluster_id, mahalanobis_distance))
-
-    df = df.with_columns(
-        pl.col("ef_cluster_id").replace_strict(cluster_id2centroid_cell_id).alias("cell_id")
+    ## Map everything back onto the table with a single join
+    mapping_df = pl.DataFrame(
+        {
+            "ef_cluster_id": cluster_id,
+            "cell_id": centroid_cell_id,
+            "centroid_distance": centroid_distance,
+            "mahalanobis_distance": mahalanobis_distance,
+        }
     )
-    df = df.with_columns(
-        pl.col("ef_cluster_id")
-        .replace_strict(cluster_id2centroid_distance)
-        .alias("centroid_distance")
-    )
-    df = df.with_columns(
-        pl.col("ef_cluster_id")
-        .replace_strict(cluster_id2mahalanobis_distance)
-        .alias("mahalanobis_distance")
-    )
+    if (worker_id is not None) and (worker_n is not None):
+        mapping_df = mapping_df.filter((pl.col("ef_cluster_id") % worker_n) == worker_id)
+    if n_workers is None:
+        n_workers = 1
+    n_workers = max(1, n_workers)
 
-    ## Filter out the columns to just what we want
-    df = df.select(
-        [
-            "transcript_id",
-            "feature_name",
-            "cell_id",
-            "x",
-            "y",
-            "x_initial",
-            "y_initial",
-            "centroid_distance",
-            "mahalanobis_distance",
-            "ef_cluster_id",
-        ]
+    if n_workers == 1:
+        (
+            df.join(mapping_df.lazy(), on="ef_cluster_id", how="inner")
+            .select(
+                [
+                    "transcript_id",
+                    "feature_name",
+                    "cell_id",
+                    "x",
+                    "y",
+                    "x_initial",
+                    "y_initial",
+                    "centroid_distance",
+                    "mahalanobis_distance",
+                    "ef_cluster_id",
+                ]
+            )
+            .sink_parquet(output_path)
+        )
+        return "Success!"
+
+    temp_dir = tempfile.mkdtemp(prefix="cluster_map_", dir=os.path.dirname(output_path) or ".")
+
+    ctx = mp.get_context("spawn")
+    in_q, out_q = ctx.Queue(), ctx.Queue()
+    workers = [ClusterMapWorker(in_q, out_q, mapping_df, temp_dir) for _ in range(n_workers)]
+    try:
+        for w in workers:
+            w.start()
+
+        parquet_file = pq.ParquetFile(input_path)
+        n_tasks = 0
+        for batch_idx, record_batch in enumerate(parquet_file.iter_batches()):
+            in_q.put((batch_idx, record_batch))
+            n_tasks += 1
+        for _ in workers:
+            in_q.put(None)
+
+        out_files: list[tuple[int, str]] = []
+        with tqdm(total=n_tasks) as pbar:
+            for _ in range(n_tasks):
+                out_files.append(out_q.get())
+                pbar.update(1)
+
+        for w in workers:
+            w.join()
+
+        if not out_files:
+            pl.DataFrame().write_parquet(output_path)
+        else:
+            sorted_part_paths = [x[1] for x in sorted(out_files, key=lambda y: y[0])]
+            pl.scan_parquet(sorted_part_paths).sink_parquet(output_path)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    return "Success!"
+
+
+def post_process_prepare(
+    input_files: list[str],
+    dataset: STDataset,
+    cluster_distance: float,
+    output_fname: str,
+    work_dir: str = ".",
+    n_workers: int | None = None,
+):
+    if n_workers is None:
+        n_workers = get_num_cpus()
+    os.makedirs(work_dir, exist_ok=True)
+    idx2genes = {i: x for i, x in enumerate(dataset.genes)}
+
+    temp_path1 = os.path.join(work_dir, "temp1-" + uuid.uuid4().hex + ".parquet")
+    temp_path2 = os.path.join(work_dir, "temp2-" + uuid.uuid4().hex)
+    temp_path3 = os.path.join(work_dir, "temp3-" + uuid.uuid4().hex)
+
+    filter_unique_and_remap_tx(input_path=input_files, output_path=temp_path1, idx2genes=idx2genes)
+    double_grid_and_group(
+        input_path=temp_path1, output_path=temp_path2, cluster_distance=cluster_distance
     )
+    remove(temp_path1)
+    grid_level_cluster(
+        input_path=temp_path2, output_path=temp_path3, epsilon=cluster_distance, n_workers=n_workers
+    )
+    remove(temp_path2)
+    grid_connected_components(input_path=temp_path3, output_path=output_fname)
+    remove(temp_path3)
+    return "Success!"
 
-    ## Write it out
-    df.sink_parquet(output_path)
 
+def post_process_merge(
+    mapped_files: list[str],
+    dataset: STDataset,
+    output_fname: str = "ef.parquet",
+    anndata_fname: str | None = "ef.h5ad",
+    cd_cutoff: float = 2.0,
+    original_tx_fname: str | None = None,
+    work_dir: str = ".",
+):
+    os.makedirs(work_dir, exist_ok=True)
+    temp_path = os.path.join(work_dir, "temp-merge-" + uuid.uuid4().hex + ".parquet")
+    pl.scan_parquet(mapped_files).sink_parquet(temp_path)
+    if original_tx_fname is not None:
+        calculate_tx_distances(
+            input_path=temp_path,
+            output_path=output_fname,
+            original_tx_fname=original_tx_fname,
+        )
+        remove(temp_path)
+    else:
+        os.rename(temp_path, output_fname)
+
+    if anndata_fname is not None:
+        create_anndata(
+            ef_tx_fname=output_fname,
+            output_fname=anndata_fname,
+            dataset=dataset,
+            cd_cutoff=cd_cutoff,
+        )
     return "Success!"
 
 
@@ -704,6 +822,40 @@ def post_process(
     work_dir: str = ".",
     n_workers: int | None = None,
 ):
+    timings: dict[str, float] = {}
+
+    def _path_nbytes(path: str) -> int:
+        if os.path.isfile(path):
+            return os.path.getsize(path)
+        total = 0
+        for root, _, files in os.walk(path):
+            for fname in files:
+                total += os.path.getsize(os.path.join(root, fname))
+        return total
+
+    def _path_nrows(path: str) -> int | None:
+        try:
+            return ds.dataset(path, format="parquet").count_rows()
+        except Exception:
+            return None
+
+    def _log_step(step_name: str, started_at: float, output_path: str):
+        elapsed = time.perf_counter() - started_at
+        timings[step_name] = elapsed
+        nbytes = _path_nbytes(output_path)
+        nrows = _path_nrows(output_path)
+        logger.info(
+            "%s complete in %.2fs | rows=%s | size=%.2f GB | path=%s",
+            step_name,
+            elapsed,
+            (str(nrows) if nrows is not None else "NA"),
+            nbytes / (1024**3),
+            output_path,
+        )
+
+    ## Keep Step 5 default behavior single-process unless user explicitly sets workers
+    user_requested_n_workers = n_workers
+
     ## Get number of parallel workers
     if n_workers is None:
         n_workers = get_num_cpus()
@@ -716,23 +868,28 @@ def post_process(
 
     ## Step 1: Make tx unique
     logger.info("Step 1: getting unique tx...")
+    step_start = time.perf_counter()
     temp_fname1 = "temp1-" + uuid.uuid4().hex + ".parquet"
     temp_path1 = os.path.join(work_dir, temp_fname1)
     filter_unique_and_remap_tx(input_path=input_files, output_path=temp_path1, idx2genes=idx2genes)
+    _log_step("Step 1", step_start, temp_path1)
 
     ## Step 2: Build double grid
     logger.info("Step 2: building double grid...")
+    step_start = time.perf_counter()
     temp_fname2 = "temp2-" + uuid.uuid4().hex
     temp_path2 = os.path.join(work_dir, temp_fname2)
     double_grid_and_group(
         input_path=temp_path1, output_path=temp_path2, cluster_distance=cluster_distance
     )
+    _log_step("Step 2", step_start, temp_path2)
 
     ## Remove first intermediate file
     remove(temp_path1)
 
     ## Step 3: Cluster within each grid section
     logger.info("Step 3: clustering within grid sections...")
+    step_start = time.perf_counter()
     temp_fname3 = "temp3-" + uuid.uuid4().hex
     temp_path3 = os.path.join(work_dir, temp_fname3)
     grid_level_cluster(
@@ -741,21 +898,25 @@ def post_process(
         epsilon=cluster_distance,
         n_workers=n_workers,
     )
+    _log_step("Step 3", step_start, temp_path3)
 
     ## Remove second intermediate file
     remove(temp_path2)
 
     ## Step 4: Link clusters across grid versions
     logger.info("Step 4: linking clusters across grids...")
+    step_start = time.perf_counter()
     temp_fname4 = "temp4-" + uuid.uuid4().hex + ".parquet"
     temp_path4 = os.path.join(work_dir, temp_fname4)
     grid_connected_components(input_path=temp_path3, output_path=temp_path4)
+    _log_step("Step 4", step_start, temp_path4)
 
     ## Remove third intermediate file
     remove(temp_path3)
 
     ## Step 5: Map clusters to cells
     logger.info("Step 5: mapping clusters to cells...")
+    step_start = time.perf_counter()
     temp_fname5 = "temp5-" + uuid.uuid4().hex + ".parquet"
     temp_path5 = os.path.join(work_dir, temp_fname5)
     map_clusters_to_cells(
@@ -764,7 +925,9 @@ def post_process(
         nuc_centroid=dataset.nuc_xy,
         nuc_ellipse_mat=dataset.nuc_ellipse_mat,
         nuc_cell_id=dataset.nuc_cell_id,
+        n_workers=(user_requested_n_workers if user_requested_n_workers is not None else 1),
     )
+    _log_step("Step 5", step_start, temp_path5)
 
     ## Remove fourth intermediate file
     remove(temp_path4)
@@ -772,11 +935,13 @@ def post_process(
     ## Step 6: Compute distances to original positions
     if original_tx_fname is not None:
         logger.info("Step 6: computing distances to original positions...")
+        step_start = time.perf_counter()
         calculate_tx_distances(
             input_path=temp_path5,
             output_path=output_fname,
             original_tx_fname=original_tx_fname,
         )
+        _log_step("Step 6", step_start, output_fname)
         ## Remove fifth intermediate file
         remove(temp_path5)
     else:
@@ -786,13 +951,16 @@ def post_process(
     ## Step 7: Create AnnData file
     if anndata_fname is not None:
         logger.info("Step 7: creating AnnData file...")
+        step_start = time.perf_counter()
         create_anndata(
             ef_tx_fname=output_fname,
             output_fname=anndata_fname,
             dataset=dataset,
             cd_cutoff=cd_cutoff,
         )
+        _log_step("Step 7", step_start, anndata_fname)
 
+    logger.info("Step timing summary (seconds): %s", timings)
     logger.info("DONE!")
 
     return "Success!"
