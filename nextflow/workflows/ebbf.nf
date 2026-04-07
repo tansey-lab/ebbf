@@ -50,48 +50,84 @@ workflow EBBF {
     }
 
     //
-    // STEP 2: Train or skip
-    // model_weights + resume_training  -> train with --resume_from
-    // model_weights + !resume_training -> skip training, use weights directly
-    // !model_weights                   -> train from scratch
+    // STEP 2–3: Train + infer — or skip when inference_results supplies part-*.parquet shards
     //
-    if (params.model_weights && !params.resume_training) {
-        // Skip training, use provided weights directly for inference
-        ch_weights = ch_dataset
-            .map { meta, dataset -> [ meta, file(params.model_weights) ] }
+    if (params.inference_results) {
+        ch_infer_sample_count = ch_samplesheet.count()
+        ch_postprocess_prepare_input = ch_samplesheet
+            .combine(ch_infer_sample_count)
+            .map { meta, zarr_dir, n_samplesheet_rows ->
+                def base = file(params.inference_results, checkIfExists: true)
+                if (!base.isDirectory()) {
+                    error("inference_results must be a directory: ${base}")
+                }
+                def nested_glob = file("${base}/${meta.id}/part-*.parquet")
+                def parts = nested_glob instanceof List ? nested_glob : (nested_glob ? [nested_glob] : [])
+                parts = parts.flatten().findAll { it }
+                if (parts.isEmpty() && n_samplesheet_rows == 1) {
+                    def flat_glob = file("${base}/part-*.parquet")
+                    def flat_list = flat_glob instanceof List ? flat_glob : (flat_glob ? [flat_glob] : [])
+                    parts = flat_list.flatten().findAll { it }
+                }
+                if (parts.isEmpty()) {
+                    def tried = "${base}/${meta.id}/part-*.parquet"
+                    if (n_samplesheet_rows == 1) {
+                        tried += " and ${base}/part-*.parquet"
+                    }
+                    error("No part-*.parquet inference shards found for sample ${meta.id}. Tried: ${tried}")
+                }
+                parts.sort { a, b -> a.name <=> b.name }
+                [ meta, parts ]
+            }
+            .join(ch_dataset)
     } else {
-        // Train the model (optionally resuming from model_weights)
-        EBBF_TRAIN(ch_dataset)
-        ch_versions = ch_versions.mix(EBBF_TRAIN.out.versions.first())
-        ch_weights = EBBF_TRAIN.out.weights
+        //
+        // STEP 2: Train or skip
+        // model_weights + resume_training  -> train with --resume_from
+        // model_weights + !resume_training -> skip training, use weights directly
+        // !model_weights                   -> train from scratch
+        //
+        if (params.model_weights && !params.resume_training) {
+            // Skip training, use provided weights directly for inference
+            ch_weights = ch_dataset
+                .map { meta, dataset -> [ meta, file(params.model_weights) ] }
+        } else {
+            // Train the model (optionally resuming from model_weights)
+            EBBF_TRAIN(ch_dataset)
+            ch_versions = ch_versions.mix(EBBF_TRAIN.out.versions.first())
+            ch_weights = EBBF_TRAIN.out.weights
+        }
+
+        //
+        // STEP 3: Infer - Run inference with the trained model
+        // Transcripts are derived from zarr_dir: points/transcripts/
+        // Generate worker channels for parallel inference
+        //
+        ch_infer_input = ch_weights
+            .join(ch_dataset)
+            .join(ch_samplesheet)
+            .combine(Channel.of(0..<params.n_infer_workers))
+            .map { meta, weights, dataset, zarr_dir, worker_id ->
+                [ meta, weights, dataset, zarr_dir, params.n_infer_workers, worker_id ]
+            }
+
+        EBBF_INFER(ch_infer_input)
+        ch_versions = ch_versions.mix(EBBF_INFER.out.versions.first())
+
+        //
+        // STEP 4 (input): Aggregate inference worker outputs per sample
+        //
+        ch_postprocess_prepare_input = EBBF_INFER.out.results
+            .groupTuple()
+            .map { meta, parquet_list ->
+                [ meta, parquet_list.flatten() ]
+            }
+            .join(ch_dataset)
     }
 
     //
-    // STEP 3: Infer - Run inference with the trained model
-    // Transcripts are derived from zarr_dir: points/transcripts/
-    // Generate worker channels for parallel inference
+    // STEP 4: Postprocess prepare — from inference outputs or from inference_results shards
     //
-    ch_infer_input = ch_weights
-        .join(ch_dataset)
-        .join(ch_samplesheet)
-        .combine(Channel.of(0..<params.n_infer_workers))
-        .map { meta, weights, dataset, zarr_dir, worker_id ->
-            [ meta, weights, dataset, zarr_dir, params.n_infer_workers, worker_id ]
-        }
-
-    EBBF_INFER(ch_infer_input)
-    ch_versions = ch_versions.mix(EBBF_INFER.out.versions.first())
-
-    //
-    // STEP 4: Postprocess - Aggregate inference results
-    // Wait for all inference workers to complete before postprocessing
-    //
-    ch_postprocess_prepare_input = EBBF_INFER.out.results
-        .groupTuple()
-        .map { meta, parquet_list ->
-            [ meta, parquet_list.flatten() ]
-        }
-        .join(ch_dataset)
     EBBF_POSTPROCESS_PREPARE(ch_postprocess_prepare_input)
     ch_versions = ch_versions.mix(EBBF_POSTPROCESS_PREPARE.out.versions.first())
 
