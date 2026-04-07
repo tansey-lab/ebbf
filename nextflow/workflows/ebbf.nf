@@ -6,7 +6,9 @@
 include { EBBF_PREPROCESS           } from '../modules/local/preprocess'
 include { EBBF_TRAIN                } from '../modules/local/train'
 include { EBBF_INFER                } from '../modules/local/infer'
-include { EBBF_POSTPROCESS          } from '../modules/local/postprocess'
+include { EBBF_POSTPROCESS_PREPARE  } from '../modules/local/postprocess'
+include { EBBF_POSTPROCESS_MAP      } from '../modules/local/postprocess'
+include { EBBF_POSTPROCESS_MERGE    } from '../modules/local/postprocess'
 include { EBBF_REPORTING            } from '../modules/local/reporting'
 include { MULTIQC                   } from '../modules/nf-core/multiqc/main'
 include { paramsSummaryMap          } from 'plugin/nf-schema'
@@ -84,25 +86,44 @@ workflow EBBF {
     // STEP 4: Postprocess - Aggregate inference results
     // Wait for all inference workers to complete before postprocessing
     //
-    ch_postprocess_input = EBBF_INFER.out.results
+    ch_postprocess_prepare_input = EBBF_INFER.out.results
         .groupTuple()
         .map { meta, parquet_list ->
             [ meta, parquet_list.flatten() ]
         }
         .join(ch_dataset)
+    EBBF_POSTPROCESS_PREPARE(ch_postprocess_prepare_input)
+    ch_versions = ch_versions.mix(EBBF_POSTPROCESS_PREPARE.out.versions.first())
+
+    ch_postprocess_map_input = EBBF_POSTPROCESS_PREPARE.out.step4
+        .join(ch_dataset)
+        .combine(Channel.of(0..<params.n_postprocess_workers))
+        .map { meta, step4_parquet, dataset_file, worker_id ->
+            [ meta, step4_parquet, dataset_file, params.n_postprocess_workers, worker_id ]
+        }
+
+    EBBF_POSTPROCESS_MAP(ch_postprocess_map_input)
+    ch_versions = ch_versions.mix(EBBF_POSTPROCESS_MAP.out.versions.first())
+
+    ch_postprocess_merge_input = EBBF_POSTPROCESS_MAP.out.mapped
+        .groupTuple()
+        .map { meta, mapped_parts ->
+            [ meta, mapped_parts.flatten() ]
+        }
+        .join(ch_dataset)
         .join(ch_transcripts)
         .join(ch_samplesheet)
 
-    EBBF_POSTPROCESS(ch_postprocess_input)
-    ch_versions = ch_versions.mix(EBBF_POSTPROCESS.out.versions.first())
+    EBBF_POSTPROCESS_MERGE(ch_postprocess_merge_input)
+    ch_versions = ch_versions.mix(EBBF_POSTPROCESS_MERGE.out.versions.first())
 
     //
     // STEP 5: Reporting - Generate HTML comparison reports
     // Can be disabled with --reporting false to save compute time
     //
     if (params.reporting) {
-        ch_reporting_input = EBBF_POSTPROCESS.out.anndata
-            .join(EBBF_POSTPROCESS.out.results)
+        ch_reporting_input = EBBF_POSTPROCESS_MERGE.out.anndata
+            .join(EBBF_POSTPROCESS_MERGE.out.results)
             .join(ch_transcripts)
             .join(ch_samplesheet)
 
@@ -181,7 +202,7 @@ workflow EBBF {
     )
 
     emit:
-    postprocess_results = EBBF_POSTPROCESS.out.results
+    postprocess_results = EBBF_POSTPROCESS_MERGE.out.results
     reports             = params.reporting ? EBBF_REPORTING.out.reports : channel.empty()
     multiqc_report      = MULTIQC.out.report.toList()
     versions            = ch_versions

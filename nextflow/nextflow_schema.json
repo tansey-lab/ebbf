@@ -61,6 +61,14 @@
                     "description": "Path to directory containing preprocessing outputs (stdata.npz and transcripts.parquet).",
                     "help_text": "When provided, skips the preprocessing step and uses existing files from this directory. The directory must contain 'stdata.npz' and 'transcripts.parquet'. The zarr/xenium input is still required for metadata.",
                     "fa_icon": "fas fa-folder"
+                },
+                "n_postprocess_workers": {
+                    "type": "integer",
+                    "default": 4,
+                    "minimum": 1,
+                    "description": "Number of Nextflow workers to fan out postprocess mapping before merge.",
+                    "help_text": "Postprocess is split into prepare, map (fan-out), and merge steps. This controls map fan-out worker count.",
+                    "fa_icon": "fas fa-microchip"
                 }
             }
         },
