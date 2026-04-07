@@ -26,6 +26,39 @@ from ebbf.data.st_dataset import STDataset
 logger = logging.getLogger(__name__)
 
 
+def _path_nbytes(path: str) -> int:
+    if os.path.isfile(path):
+        return os.path.getsize(path)
+    total = 0
+    for root, _, files in os.walk(path):
+        for fname in files:
+            total += os.path.getsize(os.path.join(root, fname))
+    return total
+
+
+def _path_nrows(path: str) -> int | None:
+    try:
+        return ds.dataset(path, format="parquet").count_rows()
+    except Exception:
+        return None
+
+
+def _log_step(step_name: str, started_at: float, output_path: str, timings: dict | None = None):
+    elapsed = time.perf_counter() - started_at
+    if timings is not None:
+        timings[step_name] = elapsed
+    nbytes = _path_nbytes(output_path)
+    nrows = _path_nrows(output_path)
+    logger.info(
+        "%s complete in %.2fs | rows=%s | size=%.2f GB | path=%s",
+        step_name,
+        elapsed,
+        (str(nrows) if nrows is not None else "NA"),
+        nbytes / (1024**3),
+        output_path,
+    )
+
+
 def remove(path):
     """param <path> could either be relative or absolute."""
     if os.path.isfile(path) or os.path.islink(path):
@@ -116,6 +149,7 @@ class ClusterMapWorker(mp.Process):
 ### STEP 1 ###
 ##############
 def filter_unique_and_remap_tx(input_path: str | list[str], output_path: str, idx2genes: dict):
+    logger.info("filter_unique_and_remap_tx: deduplicating transcripts and remapping gene indices")
 
     df = pl.scan_parquet(input_path)
 
@@ -141,6 +175,7 @@ def filter_unique_and_remap_tx(input_path: str | list[str], output_path: str, id
 
     ## Ship it
     df.sink_parquet(output_path)
+    logger.info("filter_unique_and_remap_tx: done → %s", output_path)
     return "Success!"
 
 
@@ -198,8 +233,11 @@ def double_grid_and_group(
     box_width = max(box_width, 2 * cluster_distance)
     os.makedirs(output_path, exist_ok=True)
 
-    for grid_version, offset in [(0, 0.0), (1, 0.5)]:
+    for grid_version, offset in tqdm([(0, 0.0), (1, 0.5)], desc="double_grid_and_group"):
         ## Phase 1: compute grid_name -> super_grid_label mapping (small aggregation)
+        logger.info(
+            "double_grid_and_group: grid_version=%d phase 1 – computing partition map", grid_version
+        )
         ldf = pl.scan_parquet(input_path)
         counts = (
             _add_grid_columns(ldf, box_width, offset)
@@ -215,37 +253,26 @@ def double_grid_and_group(
                 "super_grid_label": labels,
             }
         )
+        n_partitions = int(mapping_df["super_grid_label"].max()) + 1
+        logger.info(
+            "double_grid_and_group: grid_version=%d – %d partitions", grid_version, n_partitions
+        )
 
-        ## Phase 2: stream input in batches and append to one file per partition
-        writers: dict[int, pq.ParquetWriter] = {}
-        parquet_file = pq.ParquetFile(input_path)
-        try:
-            for record_batch in parquet_file.iter_batches():
-                batch = pl.from_arrow(record_batch)
-                batch = _add_grid_columns(batch, box_width, offset)
-                batch = batch.join(mapping_df, on="grid_name", how="left")
-                batch = batch.with_columns(
-                    pl.lit(grid_version).cast(pl.Int32).alias("grid_version"),
-                )
-
-                for group_df in batch.partition_by("super_grid_label", maintain_order=False):
-                    label = int(group_df["super_grid_label"][0])
-                    final_part_dir = os.path.join(
-                        output_path,
-                        f"grid_version={grid_version}",
-                        f"super_grid_label={label}",
-                    )
-                    os.makedirs(final_part_dir, exist_ok=True)
-                    final_path = os.path.join(final_part_dir, "data.parquet")
-                    table = group_df.to_arrow()
-                    writer = writers.get(label)
-                    if writer is None:
-                        writer = pq.ParquetWriter(final_path, table.schema)
-                        writers[label] = writer
-                    writer.write_table(table)
-        finally:
-            for writer in writers.values():
-                writer.close()
+        ## Phase 2: collect full df and write hive-partitioned parquet in one shot
+        logger.info(
+            "double_grid_and_group: grid_version=%d phase 2 – writing partitioned parquet",
+            grid_version,
+        )
+        df = (
+            pl.scan_parquet(input_path)
+            .pipe(lambda lf: _add_grid_columns(lf, box_width, offset))
+            .join(mapping_df.lazy(), on="grid_name", how="left")
+            .with_columns(pl.lit(grid_version).cast(pl.Int32).alias("grid_version"))
+            .collect(engine="streaming")
+        )
+        part_dir = os.path.join(output_path, f"grid_version={grid_version}")
+        df.write_parquet(part_dir, partition_by=["super_grid_label"])
+        logger.info("double_grid_and_group: grid_version=%d done", grid_version)
 
     return "Success!"
 
@@ -484,22 +511,40 @@ def post_process_prepare(
         n_workers = get_num_cpus()
     os.makedirs(work_dir, exist_ok=True)
     idx2genes = {i: x for i, x in enumerate(dataset.genes)}
+    timings: dict[str, float] = {}
 
     temp_path1 = os.path.join(work_dir, "temp1-" + uuid.uuid4().hex + ".parquet")
     temp_path2 = os.path.join(work_dir, "temp2-" + uuid.uuid4().hex)
     temp_path3 = os.path.join(work_dir, "temp3-" + uuid.uuid4().hex)
 
+    logger.info("Step 1: deduplicating and remapping transcripts")
+    step_start = time.perf_counter()
     filter_unique_and_remap_tx(input_path=input_files, output_path=temp_path1, idx2genes=idx2genes)
+    _log_step("Step 1", step_start, temp_path1, timings)
+
+    logger.info("Step 2: building double grid (n_workers=%d)", n_workers)
+    step_start = time.perf_counter()
     double_grid_and_group(
         input_path=temp_path1, output_path=temp_path2, cluster_distance=cluster_distance
     )
+    _log_step("Step 2", step_start, temp_path2, timings)
     remove(temp_path1)
+
+    logger.info("Step 3: clustering within grid sections (n_workers=%d)", n_workers)
+    step_start = time.perf_counter()
     grid_level_cluster(
         input_path=temp_path2, output_path=temp_path3, epsilon=cluster_distance, n_workers=n_workers
     )
+    _log_step("Step 3", step_start, temp_path3, timings)
     remove(temp_path2)
+
+    logger.info("Step 4: linking clusters across grid versions")
+    step_start = time.perf_counter()
     grid_connected_components(input_path=temp_path3, output_path=output_fname)
+    _log_step("Step 4", step_start, output_fname, timings)
     remove(temp_path3)
+
+    logger.info("post_process_prepare complete. Step timing summary (seconds): %s", timings)
     return "Success!"
 
 
@@ -824,35 +869,6 @@ def post_process(
 ):
     timings: dict[str, float] = {}
 
-    def _path_nbytes(path: str) -> int:
-        if os.path.isfile(path):
-            return os.path.getsize(path)
-        total = 0
-        for root, _, files in os.walk(path):
-            for fname in files:
-                total += os.path.getsize(os.path.join(root, fname))
-        return total
-
-    def _path_nrows(path: str) -> int | None:
-        try:
-            return ds.dataset(path, format="parquet").count_rows()
-        except Exception:
-            return None
-
-    def _log_step(step_name: str, started_at: float, output_path: str):
-        elapsed = time.perf_counter() - started_at
-        timings[step_name] = elapsed
-        nbytes = _path_nbytes(output_path)
-        nrows = _path_nrows(output_path)
-        logger.info(
-            "%s complete in %.2fs | rows=%s | size=%.2f GB | path=%s",
-            step_name,
-            elapsed,
-            (str(nrows) if nrows is not None else "NA"),
-            nbytes / (1024**3),
-            output_path,
-        )
-
     ## Keep Step 5 default behavior single-process unless user explicitly sets workers
     user_requested_n_workers = n_workers
 
@@ -872,7 +888,7 @@ def post_process(
     temp_fname1 = "temp1-" + uuid.uuid4().hex + ".parquet"
     temp_path1 = os.path.join(work_dir, temp_fname1)
     filter_unique_and_remap_tx(input_path=input_files, output_path=temp_path1, idx2genes=idx2genes)
-    _log_step("Step 1", step_start, temp_path1)
+    _log_step("Step 1", step_start, temp_path1, timings)
 
     ## Step 2: Build double grid
     logger.info("Step 2: building double grid...")
@@ -882,7 +898,7 @@ def post_process(
     double_grid_and_group(
         input_path=temp_path1, output_path=temp_path2, cluster_distance=cluster_distance
     )
-    _log_step("Step 2", step_start, temp_path2)
+    _log_step("Step 2", step_start, temp_path2, timings)
 
     ## Remove first intermediate file
     remove(temp_path1)
@@ -898,7 +914,7 @@ def post_process(
         epsilon=cluster_distance,
         n_workers=n_workers,
     )
-    _log_step("Step 3", step_start, temp_path3)
+    _log_step("Step 3", step_start, temp_path3, timings)
 
     ## Remove second intermediate file
     remove(temp_path2)
@@ -909,7 +925,7 @@ def post_process(
     temp_fname4 = "temp4-" + uuid.uuid4().hex + ".parquet"
     temp_path4 = os.path.join(work_dir, temp_fname4)
     grid_connected_components(input_path=temp_path3, output_path=temp_path4)
-    _log_step("Step 4", step_start, temp_path4)
+    _log_step("Step 4", step_start, temp_path4, timings)
 
     ## Remove third intermediate file
     remove(temp_path3)
@@ -927,7 +943,7 @@ def post_process(
         nuc_cell_id=dataset.nuc_cell_id,
         n_workers=(user_requested_n_workers if user_requested_n_workers is not None else 1),
     )
-    _log_step("Step 5", step_start, temp_path5)
+    _log_step("Step 5", step_start, temp_path5, timings)
 
     ## Remove fourth intermediate file
     remove(temp_path4)
@@ -941,7 +957,7 @@ def post_process(
             output_path=output_fname,
             original_tx_fname=original_tx_fname,
         )
-        _log_step("Step 6", step_start, output_fname)
+        _log_step("Step 6", step_start, output_fname, timings)
         ## Remove fifth intermediate file
         remove(temp_path5)
     else:
@@ -958,7 +974,7 @@ def post_process(
             dataset=dataset,
             cd_cutoff=cd_cutoff,
         )
-        _log_step("Step 7", step_start, anndata_fname)
+        _log_step("Step 7", step_start, anndata_fname, timings)
 
     logger.info("Step timing summary (seconds): %s", timings)
     logger.info("DONE!")
