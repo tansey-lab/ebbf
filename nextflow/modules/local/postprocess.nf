@@ -15,7 +15,7 @@ process EBBF_POSTPROCESS_PREPARE {
     def n_workers_arg = params.n_postprocess_workers ? "--n_workers ${params.n_postprocess_workers}" : ""
     """
     ebbf-postprocess \\
-        --mode prepare \\
+        prepare \\
         ${parquet_files} \\
         --dataset ${dataset_file} \\
         --cluster_distance ${params.cluster_distance} \\
@@ -47,7 +47,7 @@ process EBBF_POSTPROCESS_MAP {
     def prefix = task.ext.prefix ?: "${meta.id}"
     """
     ebbf-postprocess \\
-        --mode map \\
+        map \\
         --dataset ${dataset_file} \\
         --input_step4 ${step4_parquet} \\
         --n_workers ${n_workers} \\
@@ -82,7 +82,7 @@ process EBBF_POSTPROCESS_MERGE {
     def orig_tx_arg = "--original_transcripts ${original_transcripts}"
     """
     ebbf-postprocess \\
-        --mode merge \\
+        merge \\
         ${mapped_parts} \\
         --dataset ${dataset_file} \\
         --output ${prefix}.parquet \\

@@ -9,28 +9,8 @@ from ebbf.inference.post_process import (
 )
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Post-process EBB&Flow inference results")
-    parser.add_argument(
-        "--mode",
-        type=str,
-        choices=["full", "prepare", "map", "merge"],
-        default="full",
-        help="Execution mode: full pipeline, prepare-only, map worker, or merge",
-    )
-    parser.add_argument(
-        "input_files",
-        type=str,
-        nargs="*",
-        help="Input parquet files from inference",
-    )
+def _add_common_args(parser: argparse.ArgumentParser):
     parser.add_argument("--dataset", type=str, required=True, help="Path to stdata.npz file")
-    parser.add_argument(
-        "--cluster_distance",
-        type=float,
-        default=1.5,
-        help="Linkage distance for clustering",
-    )
     parser.add_argument(
         "--output",
         type=str,
@@ -38,47 +18,119 @@ def main():
         help="Output file path (default: ef.parquet)",
     )
     parser.add_argument(
-        "--anndata_output",
-        type=str,
-        default="ef.h5ad",
-        help="Output AnnData file path (default: ef.h5ad).",
-    )
-    parser.add_argument(
-        "--cd_cutoff",
-        type=float,
-        default=2.0,
-        help="Centroid distance cutoff for AnnData filtering (default: 2.0)",
-    )
-    parser.add_argument(
-        "--original_transcripts",
-        type=str,
-        default=None,
-        help="Path to original transcripts parquet file for distance computation",
-    )
-    parser.add_argument(
         "--work_dir",
         type=str,
         default=".",
         help="Directory for temporary files (default: current directory)",
     )
-    parser.add_argument(
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Post-process EBB&Flow inference results")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # full
+    parser_full = subparsers.add_parser("full", help="Run full post-process pipeline")
+    parser_full.add_argument(
+        "input_files", type=str, nargs="+", help="Input parquet files from inference"
+    )
+    _add_common_args(parser_full)
+    parser_full.add_argument(
+        "--cluster_distance",
+        type=float,
+        default=1.5,
+        help="Linkage distance for clustering",
+    )
+    parser_full.add_argument(
+        "--anndata_output",
+        type=str,
+        default="ef.h5ad",
+        help="Output AnnData file path (default: ef.h5ad).",
+    )
+    parser_full.add_argument(
+        "--cd_cutoff",
+        type=float,
+        default=2.0,
+        help="Centroid distance cutoff for AnnData filtering (default: 2.0)",
+    )
+    parser_full.add_argument(
+        "--original_transcripts",
+        type=str,
+        default=None,
+        help="Path to original transcripts parquet file for distance computation",
+    )
+    parser_full.add_argument(
         "--n_workers",
         type=int,
         default=None,
         help="Number of CPU workers for post-processing (default: auto)",
     )
-    parser.add_argument("--input_step4", type=str, default=None, help="Step 4 parquet input path")
-    parser.add_argument(
-        "--worker_id",
+
+    # prepare
+    parser_prepare = subparsers.add_parser("prepare", help="Run post-process prepare stage")
+    parser_prepare.add_argument(
+        "input_files", type=str, nargs="+", help="Input parquet files from inference"
+    )
+    _add_common_args(parser_prepare)
+    parser_prepare.add_argument(
+        "--cluster_distance",
+        type=float,
+        default=1.5,
+        help="Linkage distance for clustering",
+    )
+    parser_prepare.add_argument(
+        "--n_workers",
         type=int,
         default=None,
-        help="Worker ID for map mode (0-indexed)",
+        help="Number of CPU workers for prepare stage (default: auto)",
     )
+
+    # map
+    parser_map = subparsers.add_parser(
+        "map", help="Run post-process map stage for one worker shard"
+    )
+    _add_common_args(parser_map)
+    parser_map.add_argument(
+        "--input_step4", type=str, required=True, help="Step 4 parquet input path"
+    )
+    parser_map.add_argument("--worker_id", type=int, required=True, help="Worker ID for map stage")
+    parser_map.add_argument(
+        "--n_workers",
+        type=int,
+        required=True,
+        help="Total number of map workers",
+    )
+
+    # merge
+    parser_merge = subparsers.add_parser("merge", help="Run post-process merge/finalize stage")
+    parser_merge.add_argument(
+        "input_files", type=str, nargs="+", help="Mapped parquet files from map workers"
+    )
+    _add_common_args(parser_merge)
+    parser_merge.add_argument(
+        "--anndata_output",
+        type=str,
+        default="ef.h5ad",
+        help="Output AnnData file path (default: ef.h5ad).",
+    )
+    parser_merge.add_argument(
+        "--cd_cutoff",
+        type=float,
+        default=2.0,
+        help="Centroid distance cutoff for AnnData filtering (default: 2.0)",
+    )
+    parser_merge.add_argument(
+        "--original_transcripts",
+        type=str,
+        default=None,
+        help="Path to original transcripts parquet file for distance computation",
+    )
+
     args = parser.parse_args()
 
     stdata = STDataset.load(args.dataset)
-    anndata_fname = args.anndata_output if args.anndata_output else None
-    if args.mode == "full":
+    if args.command == "full":
+        anndata_fname = args.anndata_output if args.anndata_output else None
         post_process(
             input_files=args.input_files,
             work_dir=args.work_dir,
@@ -90,7 +142,7 @@ def main():
             original_tx_fname=args.original_transcripts,
             n_workers=args.n_workers,
         )
-    elif args.mode == "prepare":
+    elif args.command == "prepare":
         post_process_prepare(
             input_files=args.input_files,
             work_dir=args.work_dir,
@@ -99,11 +151,7 @@ def main():
             output_fname=args.output,
             n_workers=args.n_workers,
         )
-    elif args.mode == "map":
-        if args.input_step4 is None:
-            raise ValueError("--input_step4 is required for --mode map")
-        if args.worker_id is None or args.n_workers is None:
-            raise ValueError("--worker_id and --n_workers are required for --mode map")
+    elif args.command == "map":
         map_clusters_to_cells(
             input_path=args.input_step4,
             output_path=args.output,
@@ -114,7 +162,8 @@ def main():
             worker_id=args.worker_id,
             worker_n=args.n_workers,
         )
-    elif args.mode == "merge":
+    elif args.command == "merge":
+        anndata_fname = args.anndata_output if args.anndata_output else None
         post_process_merge(
             mapped_files=args.input_files,
             dataset=stdata,
