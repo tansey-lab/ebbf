@@ -227,8 +227,15 @@ def double_grid_and_group(
     cluster_distance: float,
     box_width: float | None = 50.0,
     min_size: int | None = 25_000,
+    batch_size: int = 5_000_000,
 ):
+    """Stream ``input_path`` in large batches and write hive-partitioned output.
 
+    ``batch_size`` controls peak memory (each batch is held in memory once) and
+    write overhead (larger batches → fewer write calls per partition).  The
+    default of 5 M rows uses ~1–2 GB RAM per batch and reduces write calls by
+    ~75× versus PyArrow's default 65 K-row batches.
+    """
     ## Ensure box_width is large enough
     box_width = max(box_width, 2 * cluster_distance)
     os.makedirs(output_path, exist_ok=True)
@@ -258,20 +265,42 @@ def double_grid_and_group(
             "double_grid_and_group: grid_version=%d – %d partitions", grid_version, n_partitions
         )
 
-        ## Phase 2: collect full df and write hive-partitioned parquet in one shot
+        ## Phase 2: stream in large batches and append to one writer per partition
         logger.info(
-            "double_grid_and_group: grid_version=%d phase 2 – writing partitioned parquet",
+            "double_grid_and_group: grid_version=%d phase 2 – streaming with batch_size=%d",
             grid_version,
+            batch_size,
         )
-        df = (
-            pl.scan_parquet(input_path)
-            .pipe(lambda lf: _add_grid_columns(lf, box_width, offset))
-            .join(mapping_df.lazy(), on="grid_name", how="left")
-            .with_columns(pl.lit(grid_version).cast(pl.Int32).alias("grid_version"))
-            .collect(engine="streaming")
-        )
-        part_dir = os.path.join(output_path, f"grid_version={grid_version}")
-        df.write_parquet(part_dir, partition_by=["super_grid_label"])
+        writers: dict[int, pq.ParquetWriter] = {}
+        parquet_file = pq.ParquetFile(input_path)
+        try:
+            for record_batch in parquet_file.iter_batches(batch_size=batch_size):
+                batch = pl.from_arrow(record_batch)
+                batch = _add_grid_columns(batch, box_width, offset)
+                batch = batch.join(mapping_df, on="grid_name", how="left")
+                batch = batch.with_columns(
+                    pl.lit(grid_version).cast(pl.Int32).alias("grid_version"),
+                )
+
+                for group_df in batch.partition_by("super_grid_label", maintain_order=False):
+                    label = int(group_df["super_grid_label"][0])
+                    final_part_dir = os.path.join(
+                        output_path,
+                        f"grid_version={grid_version}",
+                        f"super_grid_label={label}",
+                    )
+                    os.makedirs(final_part_dir, exist_ok=True)
+                    final_path = os.path.join(final_part_dir, "data.parquet")
+                    table = group_df.to_arrow()
+                    writer = writers.get(label)
+                    if writer is None:
+                        writer = pq.ParquetWriter(final_path, table.schema)
+                        writers[label] = writer
+                    writer.write_table(table)
+        finally:
+            for writer in writers.values():
+                writer.close()
+
         logger.info("double_grid_and_group: grid_version=%d done", grid_version)
 
     return "Success!"
