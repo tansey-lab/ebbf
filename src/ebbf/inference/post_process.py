@@ -11,7 +11,6 @@ import anndata
 import numpy as np
 import pandas as pd
 import polars as pl
-import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 from scipy.sparse import coo_array, csr_matrix
@@ -88,14 +87,16 @@ class DBSCANWorker(mp.Process):
             if fragment is None:
                 break
 
-            table = fragment.to_table()
-            x = np.array(table["x"], dtype=np.float64)
-            y = np.array(table["y"], dtype=np.float64)
-            xy = np.stack([x, y], axis=-1)
-            cluster_id = dbscan.fit_predict(xy)
-
-            cluster_field = pa.field("cluster_id", pa.int64())
-            output_table = table.append_column(cluster_field, pa.array(cluster_id))
+            # Each file may contain multiple super_grid_labels — run DBSCAN per label
+            df = pl.from_arrow(fragment.to_table())
+            results = []
+            for group_df in df.partition_by("super_grid_label", maintain_order=False):
+                xy = group_df.select(["x", "y"]).to_numpy().astype(np.float64)
+                cluster_ids = dbscan.fit_predict(xy)
+                results.append(
+                    group_df.with_columns(pl.Series("cluster_id", cluster_ids, dtype=pl.Int64))
+                )
+            output_table = pl.concat(results).to_arrow()
 
             path_names = fragment.path.split("/")
             out_fname = os.path.join(self.output_path, *path_names[2:])
@@ -228,13 +229,18 @@ def double_grid_and_group(
     box_width: float | None = 50.0,
     min_size: int | None = 25_000,
     batch_size: int = 5_000_000,
+    n_file_groups: int = 100,
 ):
     """Stream ``input_path`` in large batches and write hive-partitioned output.
 
-    ``batch_size`` controls peak memory (each batch is held in memory once) and
-    write overhead (larger batches → fewer write calls per partition).  The
-    default of 5 M rows uses ~1–2 GB RAM per batch and reduces write calls by
-    ~75× versus PyArrow's default 65 K-row batches.
+    Instead of one file per ``super_grid_label`` partition (~14k files), partitions
+    are packed into ``n_file_groups`` files per grid version (200 files total).
+    Step 3 (``grid_level_cluster``) splits each file by ``super_grid_label`` in
+    memory before running DBSCAN, so correctness is unchanged.
+
+    ``batch_size`` controls peak memory per batch.  The default of 5 M rows uses
+    ~1–2 GB RAM per batch.  ``n_file_groups=100`` gives 92 batches × 100 groups
+    = ~9 200 write calls versus ~100 M for the naive per-label approach.
     """
     ## Ensure box_width is large enough
     box_width = max(box_width, 2 * cluster_distance)
@@ -243,15 +249,21 @@ def double_grid_and_group(
     for grid_version, offset in tqdm([(0, 0.0), (1, 0.5)], desc="double_grid_and_group"):
         ## Phase 1: compute grid_name -> super_grid_label mapping (small aggregation)
         logger.info(
-            "double_grid_and_group: grid_version=%d phase 1 – computing partition map", grid_version
+            "double_grid_and_group: grid_version=%d phase 1 – computing partition sizes",
+            grid_version,
         )
         ldf = pl.scan_parquet(input_path)
+
         counts = (
             _add_grid_columns(ldf, box_width, offset)
             .group_by("grid_name")
             .len()
             .collect(engine="streaming")
             .sort(by="len")
+        )
+        logger.info(
+            "double_grid_and_group: grid_version=%d phase 1 – computing partition super groups",
+            grid_version,
         )
         labels = group_labels_min_size(counts["len"].to_numpy(), min_size)
         mapping_df = pl.DataFrame(
@@ -261,11 +273,18 @@ def double_grid_and_group(
             }
         )
         n_partitions = int(mapping_df["super_grid_label"].max()) + 1
+        n_groups = min(n_file_groups, n_partitions)
+        mapping_df = mapping_df.with_columns(
+            (pl.col("super_grid_label") % n_groups).cast(pl.Int32).alias("file_group")
+        )
         logger.info(
-            "double_grid_and_group: grid_version=%d – %d partitions", grid_version, n_partitions
+            "double_grid_and_group: grid_version=%d – %d partitions packed into %d files",
+            grid_version,
+            n_partitions,
+            n_groups,
         )
 
-        ## Phase 2: stream in large batches and append to one writer per partition
+        ## Phase 2: stream in large batches, write one file per file_group (not per partition)
         logger.info(
             "double_grid_and_group: grid_version=%d phase 2 – streaming with batch_size=%d",
             grid_version,
@@ -282,20 +301,20 @@ def double_grid_and_group(
                     pl.lit(grid_version).cast(pl.Int32).alias("grid_version"),
                 )
 
-                for group_df in batch.partition_by("super_grid_label", maintain_order=False):
-                    label = int(group_df["super_grid_label"][0])
+                for group_df in batch.partition_by("file_group", maintain_order=False):
+                    fg = int(group_df["file_group"][0])
                     final_part_dir = os.path.join(
                         output_path,
                         f"grid_version={grid_version}",
-                        f"super_grid_label={label}",
+                        f"file_group={fg}",
                     )
                     os.makedirs(final_part_dir, exist_ok=True)
                     final_path = os.path.join(final_part_dir, "data.parquet")
                     table = group_df.to_arrow()
-                    writer = writers.get(label)
+                    writer = writers.get(fg)
                     if writer is None:
                         writer = pq.ParquetWriter(final_path, table.schema)
-                        writers[label] = writer
+                        writers[fg] = writer
                     writer.write_table(table)
         finally:
             for writer in writers.values():
@@ -360,53 +379,100 @@ def grid_level_cluster(input_path: str, output_path: str, epsilon: float, n_work
 ### STEP 4 ###
 ##############
 
+# Cluster key packing: encode (super_grid_label, grid_version, cluster_id) into one Int64.
+#
+# Bit layout (63 bits, fits in signed Int64):
+#   bits [62:32]  super_grid_label  31 bits  max 2,147,483,647
+#   bit  [31]     grid_version       1 bit   0 or 1
+#   bits [30: 0]  cluster_id        31 bits  max 2,147,483,647
+_CK_SGL_SHIFT = 32  # super_grid_label occupies bits 62..32
+_CK_GV_SHIFT = 31  # grid_version occupies bit 31
+_CK_MASK_31 = (1 << 31) - 1  # low-31-bit mask for cluster_id
 
-def grid_connected_components(input_path: str, output_path: str):
 
-    df = pl.scan_parquet(input_path)
-    df = df.with_columns(
-        (
-            pl.col("super_grid_label").cast(pl.String)
-            + "_"
-            + pl.col("grid_version").cast(pl.String)
-            + "_"
-            + pl.col("cluster_id").cast(pl.String)
-        ).alias("full_cluster_id")
-    )
-    df0 = (
-        df.filter(pl.col("grid_version") == 0)
-        .select(["transcript_id", "full_cluster_id"])
-        .rename({"full_cluster_id": "full_cluster_id_0"})
-    )
-    df1 = (
-        df.filter(pl.col("grid_version") == 1)
-        .select(["transcript_id", "full_cluster_id"])
-        .rename({"full_cluster_id": "full_cluster_id_1"})
-    )
-    edges = (
-        (df0.join(df1, on="transcript_id"))
-        .select(["full_cluster_id_0", "full_cluster_id_1"])
-        .unique()
-        .lazy()
-    )
-    edges = edges.collect(engine="streaming").to_pandas()
+def ck_encode() -> pl.Expr:
+    """Encode columns (super_grid_label, grid_version, cluster_id) → packed Int64 '_ck'."""
+    return (
+        (pl.col("super_grid_label").cast(pl.Int64) * (1 << _CK_SGL_SHIFT))
+        | (pl.col("grid_version").cast(pl.Int64) * (1 << _CK_GV_SHIFT))
+        | pl.col("cluster_id").cast(pl.Int64)
+    ).alias("_ck")
 
-    unique_cluster_id_0, idx_0 = np.unique(edges["full_cluster_id_0"], return_inverse=True)
-    unique_cluster_id_1, idx_1 = np.unique(edges["full_cluster_id_1"], return_inverse=True)
-    n_0 = unique_cluster_id_0.shape[0]
+
+def ck_decode_super_grid_label(expr: pl.Expr = pl.col("_ck")) -> pl.Expr:
+    """Recover super_grid_label from a packed cluster-key expression."""
+    return (expr // (1 << _CK_SGL_SHIFT)).alias("super_grid_label")
+
+
+def ck_decode_grid_version(expr: pl.Expr = pl.col("_ck")) -> pl.Expr:
+    """Recover grid_version (0 or 1) from a packed cluster-key expression."""
+    return ((expr // (1 << _CK_GV_SHIFT)) & 1).alias("grid_version")
+
+
+def ck_decode_cluster_id(expr: pl.Expr = pl.col("_ck")) -> pl.Expr:
+    """Recover cluster_id from a packed cluster-key expression."""
+    return (expr & _CK_MASK_31).alias("cluster_id")
+
+
+def grid_connected_components(input_path: str, output_path: str, n_parts: int = 50):
+
+    # Partitioned join: each pass loads only transcript_ids where transcript_id % n_parts == k,
+    # capping peak memory to roughly 2 × (total_rows / n_parts) × 16 bytes instead of
+    # loading all ~458M rows per side at once.
+    logger.info("grid_connected_components: collecting edges (%d partitions)", n_parts)
+    edge_chunks: list[pl.DataFrame] = []
+    for k in tqdm(range(n_parts), desc="grid_connected_components"):
+        part = (
+            pl.scan_parquet(input_path)
+            .filter((pl.col("transcript_id") % n_parts) == k)
+            .with_columns(ck_encode())
+            .select(["transcript_id", "grid_version", "_ck"])
+            .collect(engine="streaming")
+        )
+        v0 = part.filter(pl.col("grid_version") == 0).select(
+            ["transcript_id", pl.col("_ck").alias("ck0")]
+        )
+        v1 = part.filter(pl.col("grid_version") == 1).select(
+            ["transcript_id", pl.col("_ck").alias("ck1")]
+        )
+        edge_chunks.append(v0.join(v1, on="transcript_id").select(["ck0", "ck1"]).unique())
+
+    edges = pl.concat(edge_chunks).unique().to_pandas()
+    logger.info(
+        "grid_connected_components: %d unique edges across %d clusters",
+        len(edges),
+        len(set(edges["ck0"]) | set(edges["ck1"])),
+    )
+
+    logger.info("grid_connected_components: running connected_components")
+    unique_ck0, idx_0 = np.unique(edges["ck0"], return_inverse=True)
+    unique_ck1, idx_1 = np.unique(edges["ck1"], return_inverse=True)
+    n_0 = unique_ck0.shape[0]
     idx_1 = idx_1 + n_0
 
-    unique_cluster_id = np.concatenate([unique_cluster_id_0, unique_cluster_id_1])
+    unique_cluster_id = np.concatenate([unique_ck0, unique_ck1])
     n = unique_cluster_id.shape[0]
     n_edges = edges.shape[0]
     csgraph = coo_array((np.ones(n_edges), (idx_0, idx_1)), shape=(n, n))
     _, labels = connected_components(csgraph, directed=False)
-    cluster_id2final_label = dict(zip(unique_cluster_id, labels))
-
-    df_mapped = df.filter(pl.col("grid_version") == 0).with_columns(
-        pl.col("full_cluster_id").replace_strict(cluster_id2final_label).alias("ef_cluster_id")
+    n_components = int(labels.max()) + 1
+    logger.info(
+        "grid_connected_components: %d connected components from %d nodes, %d edges",
+        n_components,
+        n,
+        n_edges,
     )
-    df_mapped.sink_parquet(output_path)
+    cluster_id2final_label = dict(zip(unique_cluster_id.tolist(), labels.tolist()))
+
+    logger.info("grid_connected_components: writing output → %s", output_path)
+    (
+        pl.scan_parquet(input_path)
+        .with_columns(ck_encode())
+        .filter(pl.col("grid_version") == 0)
+        .with_columns(pl.col("_ck").replace_strict(cluster_id2final_label).alias("ef_cluster_id"))
+        .sink_parquet(output_path)
+    )
+    logger.info("grid_connected_components: done")
     return "Success!"
 
 
