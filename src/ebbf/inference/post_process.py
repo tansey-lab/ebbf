@@ -188,7 +188,7 @@ def double_grid_and_group(
     cluster_distance: float,
     box_width: float | None = 50.0,
     min_size: int | None = 25_000,
-    batch_size: int = 5_000_000,
+    batch_size: int = 50_000_000,
     n_file_groups: int = 100,
 ):
     """Stream ``input_path`` in large batches and write hive-partitioned output.
@@ -198,9 +198,12 @@ def double_grid_and_group(
     Step 3 (``grid_level_cluster``) splits each file by ``super_grid_label`` in
     memory before running DBSCAN, so correctness is unchanged.
 
-    ``batch_size`` controls peak memory per batch.  The default of 5 M rows uses
-    ~1–2 GB RAM per batch.  ``n_file_groups=100`` gives 92 batches × 100 groups
-    = ~9 200 write calls versus ~100 M for the naive per-label approach.
+    ``batch_size`` controls peak memory per batch and, critically, the total number
+    of write calls: larger batches → fewer write calls → faster on HPC shared
+    filesystems where per-write metadata overhead dominates.  The default of 50 M
+    rows uses ~4–6 GB RAM per batch and reduces write calls ~10× versus 5 M rows.
+    Each batch is converted to Arrow once, then partitioned via zero-copy slicing
+    rather than 100 separate Polars ``to_arrow()`` calls.
     """
     ## Ensure box_width is large enough
     box_width = max(box_width, 2 * cluster_distance)
@@ -244,7 +247,9 @@ def double_grid_and_group(
             n_groups,
         )
 
-        ## Phase 2: stream in large batches, write one file per file_group (not per partition)
+        ## Phase 2: stream in large batches; one Arrow conversion + zero-copy slices
+        ## per batch so write calls = n_batches × n_groups instead of the
+        ## n_batches × n_groups × (to_arrow overhead) of the naive approach.
         logger.info(
             "double_grid_and_group: grid_version=%d phase 2 – streaming with batch_size=%d",
             grid_version,
@@ -254,28 +259,34 @@ def double_grid_and_group(
         parquet_file = pq.ParquetFile(input_path)
         try:
             for record_batch in parquet_file.iter_batches(batch_size=batch_size):
-                batch = pl.from_arrow(record_batch)
-                batch = _add_grid_columns(batch, box_width, offset)
-                batch = batch.join(mapping_df, on="grid_name", how="left")
-                batch = batch.with_columns(
-                    pl.lit(grid_version).cast(pl.Int32).alias("grid_version"),
+                batch = (
+                    pl.from_arrow(record_batch)
+                    .pipe(lambda df: _add_grid_columns(df, box_width, offset))
+                    .join(mapping_df, on="grid_name", how="left")
+                    .with_columns(pl.lit(grid_version).cast(pl.Int32).alias("grid_version"))
+                    .sort("file_group")  # contiguous runs → O(1) Arrow slices below
                 )
+                table = batch.to_arrow()  # one conversion for the whole batch
+                fg_col = batch["file_group"].to_numpy()
 
-                for group_df in batch.partition_by("file_group", maintain_order=False):
-                    fg = int(group_df["file_group"][0])
+                # Identify contiguous runs of each file_group value
+                boundaries = np.where(np.diff(fg_col))[0] + 1
+                starts = np.concatenate([[0], boundaries])
+                ends = np.concatenate([boundaries, [len(batch)]])
+
+                for start, end in zip(starts, ends):
+                    fg = int(fg_col[start])
                     final_part_dir = os.path.join(
-                        output_path,
-                        f"grid_version={grid_version}",
-                        f"file_group={fg}",
+                        output_path, f"grid_version={grid_version}", f"file_group={fg}"
                     )
                     os.makedirs(final_part_dir, exist_ok=True)
                     final_path = os.path.join(final_part_dir, "data.parquet")
-                    table = group_df.to_arrow()
+                    slice_table = table.slice(start, end - start)  # zero-copy
                     writer = writers.get(fg)
                     if writer is None:
-                        writer = pq.ParquetWriter(final_path, table.schema)
+                        writer = pq.ParquetWriter(final_path, slice_table.schema)
                         writers[fg] = writer
-                    writer.write_table(table)
+                    writer.write_table(slice_table)
         finally:
             for writer in writers.values():
                 writer.close()
