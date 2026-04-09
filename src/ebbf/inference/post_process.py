@@ -3,7 +3,6 @@ import logging
 import multiprocessing as mp
 import os
 import shutil
-import tempfile
 import time
 import uuid
 
@@ -105,45 +104,6 @@ class DBSCANWorker(mp.Process):
             pq.write_table(output_table, out_fname)
 
             self.out_q.put(out_fname)
-
-
-class ClusterMapWorker(mp.Process):
-    def __init__(self, in_q: mp.Queue, out_q: mp.Queue, mapping_df: pl.DataFrame, output_path: str):
-        super().__init__()
-        self.in_q = in_q
-        self.out_q = out_q
-        self.mapping_df = mapping_df
-        self.output_path = output_path
-
-    def run(self):
-        while True:
-            payload = self.in_q.get()
-            if payload is None:
-                break
-
-            batch_idx, record_batch = payload
-            batch = pl.from_arrow(record_batch)
-            mapped = (
-                batch.join(self.mapping_df, on="ef_cluster_id", how="inner")
-                .select(
-                    [
-                        "transcript_id",
-                        "feature_name",
-                        "cell_id",
-                        "x",
-                        "y",
-                        "x_initial",
-                        "y_initial",
-                        "centroid_distance",
-                        "mahalanobis_distance",
-                        "ef_cluster_id",
-                    ]
-                )
-                .to_arrow()
-            )
-            out_fname = os.path.join(self.output_path, f"part-{batch_idx:06d}.parquet")
-            pq.write_table(mapped, out_fname)
-            self.out_q.put((batch_idx, out_fname))
 
 
 ###############
@@ -491,11 +451,9 @@ def map_clusters_to_cells(
     nuc_centroid: np.ndarray,
     nuc_ellipse_mat: np.ndarray,
     nuc_cell_id: np.ndarray,
-    n_workers: int | None = None,
     worker_id: int | None = None,
     worker_n: int | None = None,
 ):
-
     ## Build tree
     tree = KDTree(nuc_centroid)
 
@@ -532,65 +490,25 @@ def map_clusters_to_cells(
     )
     if (worker_id is not None) and (worker_n is not None):
         mapping_df = mapping_df.filter((pl.col("ef_cluster_id") % worker_n) == worker_id)
-    if n_workers is None:
-        n_workers = 1
-    n_workers = max(1, n_workers)
 
-    if n_workers == 1:
-        (
-            df.join(mapping_df.lazy(), on="ef_cluster_id", how="inner")
-            .select(
-                [
-                    "transcript_id",
-                    "feature_name",
-                    "cell_id",
-                    "x",
-                    "y",
-                    "x_initial",
-                    "y_initial",
-                    "centroid_distance",
-                    "mahalanobis_distance",
-                    "ef_cluster_id",
-                ]
-            )
-            .sink_parquet(output_path)
+    (
+        df.join(mapping_df.lazy(), on="ef_cluster_id", how="inner")
+        .select(
+            [
+                "transcript_id",
+                "feature_name",
+                "cell_id",
+                "x",
+                "y",
+                "x_initial",
+                "y_initial",
+                "centroid_distance",
+                "mahalanobis_distance",
+                "ef_cluster_id",
+            ]
         )
-        return "Success!"
-
-    temp_dir = tempfile.mkdtemp(prefix="cluster_map_", dir=os.path.dirname(output_path) or ".")
-
-    ctx = mp.get_context("spawn")
-    in_q, out_q = ctx.Queue(), ctx.Queue()
-    workers = [ClusterMapWorker(in_q, out_q, mapping_df, temp_dir) for _ in range(n_workers)]
-    try:
-        for w in workers:
-            w.start()
-
-        parquet_file = pq.ParquetFile(input_path)
-        n_tasks = 0
-        for batch_idx, record_batch in enumerate(parquet_file.iter_batches()):
-            in_q.put((batch_idx, record_batch))
-            n_tasks += 1
-        for _ in workers:
-            in_q.put(None)
-
-        out_files: list[tuple[int, str]] = []
-        with tqdm(total=n_tasks) as pbar:
-            for _ in range(n_tasks):
-                out_files.append(out_q.get())
-                pbar.update(1)
-
-        for w in workers:
-            w.join()
-
-        if not out_files:
-            pl.DataFrame().write_parquet(output_path)
-        else:
-            sorted_part_paths = [x[1] for x in sorted(out_files, key=lambda y: y[0])]
-            pl.scan_parquet(sorted_part_paths).sink_parquet(output_path)
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-
+        .sink_parquet(output_path)
+    )
     return "Success!"
 
 
@@ -964,9 +882,6 @@ def post_process(
 ):
     timings: dict[str, float] = {}
 
-    ## Keep Step 5 default behavior single-process unless user explicitly sets workers
-    user_requested_n_workers = n_workers
-
     ## Get number of parallel workers
     if n_workers is None:
         n_workers = get_num_cpus()
@@ -1036,7 +951,6 @@ def post_process(
         nuc_centroid=dataset.nuc_xy,
         nuc_ellipse_mat=dataset.nuc_ellipse_mat,
         nuc_cell_id=dataset.nuc_cell_id,
-        n_workers=(user_requested_n_workers if user_requested_n_workers is not None else 1),
     )
     _log_step("Step 5", step_start, temp_path5, timings)
 

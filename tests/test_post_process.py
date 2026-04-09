@@ -169,11 +169,13 @@ def _make_cluster_input_parquet(path: str):
     df.write_parquet(path, row_group_size=250)
 
 
-def test_map_clusters_to_cells_parallel_matches_single(tmp_path):
-    """Parallel fragment mapping should match single-worker output exactly."""
+def test_map_clusters_to_cells_sharded_matches_single(tmp_path):
+    """Sharded (worker_id/worker_n) mapping should cover all rows when merged,
+    matching single-worker output."""
     input_path = str(tmp_path / "cluster_input.parquet")
     out_single = str(tmp_path / "mapped_single.parquet")
-    out_multi = str(tmp_path / "mapped_multi.parquet")
+    out_shard0 = str(tmp_path / "mapped_shard0.parquet")
+    out_shard1 = str(tmp_path / "mapped_shard1.parquet")
     _make_cluster_input_parquet(input_path)
 
     nuc_centroid = np.array([[10.0, 60.0], [40.0, 90.0], [80.0, 130.0]])
@@ -186,34 +188,33 @@ def test_map_clusters_to_cells_parallel_matches_single(tmp_path):
         ]
     )
     nuc_cell_id = np.array([101, 102, 103])
+    common_kwargs = dict(
+        input_path=input_path,
+        nuc_centroid=nuc_centroid,
+        nuc_ellipse_mat=nuc_ellipse_mat,
+        nuc_cell_id=nuc_cell_id,
+    )
 
-    map_clusters_to_cells(
-        input_path=input_path,
-        output_path=out_single,
-        nuc_centroid=nuc_centroid,
-        nuc_ellipse_mat=nuc_ellipse_mat,
-        nuc_cell_id=nuc_cell_id,
-        n_workers=1,
-    )
-    map_clusters_to_cells(
-        input_path=input_path,
-        output_path=out_multi,
-        nuc_centroid=nuc_centroid,
-        nuc_ellipse_mat=nuc_ellipse_mat,
-        nuc_cell_id=nuc_cell_id,
-        n_workers=2,
-    )
+    map_clusters_to_cells(output_path=out_single, **common_kwargs)
+    map_clusters_to_cells(output_path=out_shard0, worker_id=0, worker_n=2, **common_kwargs)
+    map_clusters_to_cells(output_path=out_shard1, worker_id=1, worker_n=2, **common_kwargs)
 
     sort_cols = ["transcript_id", "ef_cluster_id"]
     df_single = pl.read_parquet(out_single).sort(sort_cols)
-    df_multi = pl.read_parquet(out_multi).sort(sort_cols)
+    df_sharded = pl.concat([pl.read_parquet(out_shard0), pl.read_parquet(out_shard1)]).sort(
+        sort_cols
+    )
+
+    # Shards should not overlap
+    assert df_sharded["transcript_id"].n_unique() == df_sharded.height
+
     for col in df_single.columns:
         if df_single[col].dtype.is_float():
             np.testing.assert_allclose(
                 df_single[col].to_numpy(),
-                df_multi[col].to_numpy(),
+                df_sharded[col].to_numpy(),
                 rtol=1e-12,
                 atol=1e-12,
             )
         else:
-            assert df_single[col].equals(df_multi[col])
+            assert df_single[col].equals(df_sharded[col])

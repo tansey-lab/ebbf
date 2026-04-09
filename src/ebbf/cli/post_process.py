@@ -158,7 +158,6 @@ def main():
             nuc_centroid=stdata.nuc_xy,
             nuc_ellipse_mat=stdata.nuc_ellipse_mat,
             nuc_cell_id=stdata.nuc_cell_id,
-            n_workers=1,
             worker_id=args.worker_id,
             worker_n=args.n_workers,
         )
