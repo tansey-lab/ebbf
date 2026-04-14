@@ -1493,6 +1493,18 @@ def generate_morphology_report(adata_ebbf, adata_default, sd, output_dir):
     )
 
     # ------------------------------------------------------------------ #
+    # Save raw tables as parquet                                          #
+    # ------------------------------------------------------------------ #
+    morph_default_path = Path(output_dir) / "morphology_stats_default.parquet"
+    morph_ebbf_path = Path(output_dir) / "morphology_stats_ebbf_original.parquet"
+
+    stats_before.rename_axis("cell_id").reset_index().to_parquet(morph_default_path, index=False)
+    logger.info(f"  Saved {morph_default_path}")
+
+    stats_after.rename_axis("cell_id").reset_index().to_parquet(morph_ebbf_path, index=False)
+    logger.info(f"  Saved {morph_ebbf_path}")
+
+    # ------------------------------------------------------------------ #
     # Build figures                                                        #
     # ------------------------------------------------------------------ #
     images = {}
