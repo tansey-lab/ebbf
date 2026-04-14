@@ -1,8 +1,10 @@
 import math
 
 import numpy as np
+import pandas
 from scipy.spatial import ConvexHull
 from shapely import Point, Polygon
+from tqdm.auto import tqdm as auto_tqdm
 
 
 def find_major_axis(polygon):
@@ -281,3 +283,56 @@ def compactness(polygon):
     perimeter = polygon.length
 
     return (4 * math.pi * area) / (perimeter**2)
+
+
+def calculate_morphological_statistics(adata, sd, include_nucleus=True):
+    auto_tqdm.pandas(desc="processing cell shapes")
+
+    # Normalize to string indices for merge compatibility across Xenium / EBBF datasets
+    cell_shapes = sd.shapes["cell_boundaries"].copy()
+    cell_shapes.index = cell_shapes.index.astype(str)
+    obs_df = adata.obs.copy()
+    obs_df.index = obs_df.index.astype(str)
+
+    merged_cells = obs_df.merge(cell_shapes[["geometry"]], left_index=True, right_index=True)
+    geoseries = merged_cells["geometry"]  # index = string cell IDs present in both
+
+    stats_df = pandas.DataFrame(index=geoseries.index)
+
+    stats_df["cell_area"] = geoseries.progress_apply(lambda x: x.area)
+    stats_df["cell_perimeter"] = geoseries.progress_apply(lambda x: x.length)
+    if "cell_area" in adata.obs.columns and "nucleus_area" in adata.obs.columns:
+        obs_aligned = adata.obs.copy()
+        obs_aligned.index = obs_aligned.index.astype(str)
+        stats_df["cn_ratio"] = (
+            obs_aligned.loc[geoseries.index, "cell_area"]
+            / obs_aligned.loc[geoseries.index, "nucleus_area"]
+        )
+    stats_df["cell_eccentricity"] = geoseries.progress_apply(lambda x: eccentricity(x))
+    stats_df["cell_sphericity"] = geoseries.progress_apply(lambda x: sphericity(x))
+    stats_df["cell_solidity"] = geoseries.progress_apply(lambda x: solidity(x))
+    stats_df["cell_convexity"] = geoseries.progress_apply(lambda x: convexity(x))
+    stats_df["cell_circularity"] = geoseries.progress_apply(lambda x: circularity(x))
+    stats_df["cell_compactness"] = geoseries.progress_apply(lambda x: compactness(x))
+
+    if include_nucleus and "nucleus_boundaries" in sd.shapes:
+        nucleus_shapes = sd.shapes["nucleus_boundaries"].copy()
+        nucleus_shapes.index = nucleus_shapes.index.astype(str)
+        nucleus_merged = obs_df.merge(
+            nucleus_shapes[["geometry"]], left_index=True, right_index=True
+        )
+        nucleus_geoseries = nucleus_merged["geometry"]
+
+        stats_df["nucleus_area"] = nucleus_geoseries.progress_apply(lambda x: x.area)
+        stats_df["nucleus_eccentricity"] = nucleus_geoseries.progress_apply(
+            lambda x: eccentricity(x)
+        )
+        stats_df["nucleus_sphericity"] = nucleus_geoseries.progress_apply(lambda x: sphericity(x))
+        stats_df["nucleus_solidity"] = nucleus_geoseries.progress_apply(lambda x: solidity(x))
+        stats_df["nucleus_convexity"] = nucleus_geoseries.progress_apply(lambda x: convexity(x))
+        stats_df["nucleus_circularity"] = nucleus_geoseries.progress_apply(lambda x: circularity(x))
+        stats_df["nucleus_compactness"] = nucleus_geoseries.progress_apply(lambda x: compactness(x))
+        if "cn_ratio" not in stats_df.columns and "nucleus_area" in stats_df.columns:
+            stats_df["cn_ratio"] = stats_df["cell_area"] / stats_df["nucleus_area"]
+
+    return stats_df
