@@ -77,7 +77,6 @@ class DBSCANWorker(mp.Process):
         self.output_path = output_path
 
     def run(self):
-        # Construct once, persists for lifetime of process
         dbscan = DBSCAN(eps=self.epsilon, min_samples=1)
 
         while True:
@@ -189,7 +188,7 @@ def double_grid_and_group(
     box_width: float | None = 50.0,
     min_size: int | None = 25_000,
     batch_size: int = 50_000_000,
-    n_file_groups: int = 100,
+    n_file_groups: int = 10_000,
 ):
     """Stream ``input_path`` in large batches and write hive-partitioned output.
 
