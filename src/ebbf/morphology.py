@@ -285,25 +285,58 @@ def compactness(polygon):
     return (4 * math.pi * area) / (perimeter**2)
 
 
-def calculate_morphological_statistics(adata, sd, include_nucleus=True):
+def calculate_morphological_statistics(adata, cell_boundaries, nucleus_boundaries=None):
+    """
+    Calculate morphological statistics for cells.
+
+    Parameters
+    ----------
+    adata : AnnData
+        AnnData object whose obs index contains the cell IDs to process.
+    cell_boundaries : geopandas.GeoDataFrame
+        GeoDataFrame of cell polygon boundaries indexed by cell_id.
+    nucleus_boundaries : geopandas.GeoDataFrame, optional
+        GeoDataFrame of nucleus polygon boundaries indexed by cell_id.
+        When provided, nucleus metrics and cn_ratio are also computed.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame indexed by string cell_id with one column per metric.
+    """
     auto_tqdm.pandas(desc="processing cell shapes")
 
-    # Normalize to string indices for merge compatibility across Xenium / EBBF datasets
-    cell_shapes = sd.shapes["cell_boundaries"].copy()
-    cell_shapes.index = cell_shapes.index.astype(str)
-    obs_df = adata.obs.copy()
-    obs_df.index = obs_df.index.astype(str)
+    def _make_geoseries(obs_df, boundaries):
+        """Inner-join adata obs with a boundary GeoDataFrame; return plain Series.
 
-    merged_cells = obs_df.merge(cell_shapes[["geometry"]], left_index=True, right_index=True)
-    geoseries = merged_cells["geometry"]  # index = string cell IDs present in both
+        spatialdata_io sets integer obs_names (0, 1, 2, ...) while storing the
+        actual Xenium cell IDs in obs['cell_id'].  Prefer the cell_id column so
+        that we join on the right key for both adata_default and adata_ebbf.
+        """
+        bnd = boundaries.copy()
+        bnd.index = bnd.index.astype(str)
+        if "cell_id" in obs_df.columns:
+            lookup = obs_df["cell_id"].astype(str)
+        else:
+            lookup = obs_df.index.astype(str)
+        common_mask = lookup.isin(bnd.index)
+        common_ids = lookup[common_mask]
+        # Use a plain Series so progress_apply returns float Series, not a
+        # GeoSeries (which preserves geometry dtype even for scalar results).
+        return pandas.Series(list(bnd.loc[common_ids, "geometry"]), index=common_ids.values)
 
+    geoseries = _make_geoseries(adata.obs, cell_boundaries)
     stats_df = pandas.DataFrame(index=geoseries.index)
 
     stats_df["cell_area"] = geoseries.progress_apply(lambda x: x.area)
     stats_df["cell_perimeter"] = geoseries.progress_apply(lambda x: x.length)
     if "cell_area" in adata.obs.columns and "nucleus_area" in adata.obs.columns:
+        # Re-index obs by cell_id so we can look up by the same key used in geoseries
         obs_aligned = adata.obs.copy()
-        obs_aligned.index = obs_aligned.index.astype(str)
+        if "cell_id" in obs_aligned.columns:
+            obs_aligned.index = obs_aligned["cell_id"].astype(str)
+        else:
+            obs_aligned.index = obs_aligned.index.astype(str)
         stats_df["cn_ratio"] = (
             obs_aligned.loc[geoseries.index, "cell_area"]
             / obs_aligned.loc[geoseries.index, "nucleus_area"]
@@ -315,24 +348,16 @@ def calculate_morphological_statistics(adata, sd, include_nucleus=True):
     stats_df["cell_circularity"] = geoseries.progress_apply(lambda x: circularity(x))
     stats_df["cell_compactness"] = geoseries.progress_apply(lambda x: compactness(x))
 
-    if include_nucleus and "nucleus_boundaries" in sd.shapes:
-        nucleus_shapes = sd.shapes["nucleus_boundaries"].copy()
-        nucleus_shapes.index = nucleus_shapes.index.astype(str)
-        nucleus_merged = obs_df.merge(
-            nucleus_shapes[["geometry"]], left_index=True, right_index=True
-        )
-        nucleus_geoseries = nucleus_merged["geometry"]
-
-        stats_df["nucleus_area"] = nucleus_geoseries.progress_apply(lambda x: x.area)
-        stats_df["nucleus_eccentricity"] = nucleus_geoseries.progress_apply(
-            lambda x: eccentricity(x)
-        )
-        stats_df["nucleus_sphericity"] = nucleus_geoseries.progress_apply(lambda x: sphericity(x))
-        stats_df["nucleus_solidity"] = nucleus_geoseries.progress_apply(lambda x: solidity(x))
-        stats_df["nucleus_convexity"] = nucleus_geoseries.progress_apply(lambda x: convexity(x))
-        stats_df["nucleus_circularity"] = nucleus_geoseries.progress_apply(lambda x: circularity(x))
-        stats_df["nucleus_compactness"] = nucleus_geoseries.progress_apply(lambda x: compactness(x))
-        if "cn_ratio" not in stats_df.columns and "nucleus_area" in stats_df.columns:
+    if nucleus_boundaries is not None:
+        nuc_geoseries = _make_geoseries(adata.obs, nucleus_boundaries)
+        stats_df["nucleus_area"] = nuc_geoseries.progress_apply(lambda x: x.area)
+        stats_df["nucleus_eccentricity"] = nuc_geoseries.progress_apply(lambda x: eccentricity(x))
+        stats_df["nucleus_sphericity"] = nuc_geoseries.progress_apply(lambda x: sphericity(x))
+        stats_df["nucleus_solidity"] = nuc_geoseries.progress_apply(lambda x: solidity(x))
+        stats_df["nucleus_convexity"] = nuc_geoseries.progress_apply(lambda x: convexity(x))
+        stats_df["nucleus_circularity"] = nuc_geoseries.progress_apply(lambda x: circularity(x))
+        stats_df["nucleus_compactness"] = nuc_geoseries.progress_apply(lambda x: compactness(x))
+        if "cn_ratio" not in stats_df.columns:
             stats_df["cn_ratio"] = stats_df["cell_area"] / stats_df["nucleus_area"]
 
     return stats_df

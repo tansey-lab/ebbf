@@ -1444,7 +1444,7 @@ updateLegend();
     logger.info(f"Saved {output_path} ({fsize:.1f} MB)")
 
 
-def generate_morphology_report(adata_ebbf, adata_default, sd, output_dir):
+def generate_morphology_report(adata_ebbf, adata_default, xenium_dir, output_dir):
     """
     Generate a morphology comparison HTML report.
 
@@ -1458,15 +1458,31 @@ def generate_morphology_report(adata_ebbf, adata_default, sd, output_dir):
       cell_area, cell_perimeter, eccentricity, sphericity, solidity,
       convexity, circularity, compactness (and nucleus equivalents).
     """
+    from ebbf.data.formats import has_cell_boundaries, load_cell_boundaries, load_nucleus_boundaries
     from ebbf.morphology import calculate_morphological_statistics
 
     output_path = Path(output_dir) / "morphology_report.html"
     logger.info("Generating morphology report...")
 
+    if not has_cell_boundaries(xenium_dir):
+        logger.warning("  No cell boundaries found in %s — skipping morphology report", xenium_dir)
+        return
+
+    logger.info("  Loading cell boundaries from %s...", xenium_dir)
+    cell_boundaries = load_cell_boundaries(xenium_dir)
+
+    nucleus_boundaries = None
+    try:
+        nucleus_boundaries = load_nucleus_boundaries(xenium_dir)
+    except Exception:
+        logger.info("  No nucleus boundaries found — nucleus metrics will be skipped")
+
     # --- default segmentation (before) ---
     logger.info("  Computing morphological statistics for default segmentation...")
     try:
-        stats_before = calculate_morphological_statistics(adata_default, sd)
+        stats_before = calculate_morphological_statistics(
+            adata_default, cell_boundaries, nucleus_boundaries
+        )
     except Exception as e:
         logger.warning(f"  Failed to compute default morphology stats: {e}")
         return
@@ -1478,7 +1494,9 @@ def generate_morphology_report(adata_ebbf, adata_default, sd, output_dir):
     logger.info("  Computing morphological statistics for EBBF original cells...")
     adata_ebbf_orig = adata_ebbf[adata_ebbf.obs["cell_category"] == "original"].copy()
     try:
-        stats_after = calculate_morphological_statistics(adata_ebbf_orig, sd)
+        stats_after = calculate_morphological_statistics(
+            adata_ebbf_orig, cell_boundaries, nucleus_boundaries
+        )
     except Exception as e:
         logger.warning(f"  Failed to compute EBBF morphology stats: {e}")
         return
@@ -1826,6 +1844,6 @@ def reporting(
 
     # Step 5: Morphology report
     logger.info("Step 5: generating morphology report...")
-    generate_morphology_report(adata_ebbf, adata_default, sd, output_dir)
+    generate_morphology_report(adata_ebbf, adata_default, xenium_dir, output_dir)
 
     logger.info("DONE! All reports generated.")
