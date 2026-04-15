@@ -67,42 +67,33 @@ def remove(path):
         raise ValueError(f"file {path} is not a file or dir.")
 
 
-class DBSCANWorker(mp.Process):
-    def __init__(self, in_q: mp.Queue, out_q: mp.Queue, epsilon: float, output_path: str):
+def _dbscan_worker(in_q, out_q, epsilon: float, output_path: str):
+    dbscan = DBSCAN(eps=epsilon, min_samples=1)
 
-        super().__init__()
-        self.in_q = in_q
-        self.out_q = out_q
-        self.epsilon = epsilon
-        self.output_path = output_path
+    while True:
+        fragment: ds.ParquetFileFragment = in_q.get()
 
-    def run(self):
-        dbscan = DBSCAN(eps=self.epsilon, min_samples=1)
+        if fragment is None:
+            break
 
-        while True:
-            fragment: ds.ParquetFileFragment = self.in_q.get()
+        # Each file may contain multiple super_grid_labels — run DBSCAN per label
+        df = pl.from_arrow(fragment.to_table())
+        results = []
+        for group_df in df.partition_by("super_grid_label", maintain_order=False):
+            xy = group_df.select(["x", "y"]).to_numpy().astype(np.float64)
+            cluster_ids = dbscan.fit_predict(xy)
+            results.append(
+                group_df.with_columns(pl.Series("cluster_id", cluster_ids, dtype=pl.Int64))
+            )
+        output_table = pl.concat(results).to_arrow()
 
-            if fragment is None:
-                break
+        path_names = fragment.path.split("/")
+        out_fname = os.path.join(output_path, *path_names[2:])
+        out_folder = os.path.join(output_path, *path_names[2:-1])
+        os.makedirs(out_folder, exist_ok=True)
+        pq.write_table(output_table, out_fname)
 
-            # Each file may contain multiple super_grid_labels — run DBSCAN per label
-            df = pl.from_arrow(fragment.to_table())
-            results = []
-            for group_df in df.partition_by("super_grid_label", maintain_order=False):
-                xy = group_df.select(["x", "y"]).to_numpy().astype(np.float64)
-                cluster_ids = dbscan.fit_predict(xy)
-                results.append(
-                    group_df.with_columns(pl.Series("cluster_id", cluster_ids, dtype=pl.Int64))
-                )
-            output_table = pl.concat(results).to_arrow()
-
-            path_names = fragment.path.split("/")
-            out_fname = os.path.join(self.output_path, *path_names[2:])
-            out_folder = os.path.join(self.output_path, *path_names[2:-1])
-            os.makedirs(out_folder, exist_ok=True)
-            pq.write_table(output_table, out_fname)
-
-            self.out_q.put(out_fname)
+        out_q.put(out_fname)
 
 
 ###############
@@ -315,8 +306,8 @@ def grid_level_cluster(input_path: str, output_path: str, epsilon: float, n_work
     ctx = mp.get_context("spawn")
     in_q, out_q = ctx.Queue(), ctx.Queue()
 
-    ## Spin up the workers
-    workers = [DBSCANWorker(in_q, out_q, epsilon, output_path) for _ in range(n_workers)]
+    ## Spin up the workers (use ctx.Process so spawn is respected — avoids fork-after-polars/Rayon deadlock)
+    workers = [ctx.Process(target=_dbscan_worker, args=(in_q, out_q, epsilon, output_path)) for _ in range(n_workers)]
     for w in workers:
         w.start()
 
