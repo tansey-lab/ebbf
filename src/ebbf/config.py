@@ -55,6 +55,33 @@ class DataConfig:
     max_noise_scale: float = 3.0
     """Maximum scale of noise to add."""
 
+    max_garbage_prob: float = 0.2
+    """
+    Maximum per-patch probability that a transcript is
+    replaced by a garbage (noise) transcript.
+    """
+
+    min_garbage_intercellular_ratio: float = 3.0
+    """Minimum ratio of intercellular-to-uniform garbage transcripts."""
+
+    max_garbage_intercellular_ratio: float = 10.0
+    """Maximum ratio of intercellular-to-uniform garbage transcripts."""
+
+    max_nucleus_swap_prob: float = 0.0
+    """Maximum probability of swapping a transcript's nucleus of origin with a nearby nucleus."""
+
+    nucleus_swap_radius: float = 15.0
+    """Radius (in data units) within which nucleus swaps are considered."""
+
+    raster_resolution: int = 64
+    """Resolution of the rasterization grid used for intercellular space sampling."""
+
+    min_uniform_prob: float = 0.1
+    """Minimum weight on the uniform component when sampling noise gene identities."""
+
+    max_uniform_prob: float = 0.8
+    """Maximum weight on the uniform component when sampling noise gene identities."""
+
 
 @dataclass
 class ModelConfig:
@@ -98,6 +125,10 @@ class ModelConfig:
 
     splat: bool = True
     """Whether to use splatting for grid encoding."""
+
+    pred_noise: bool = True
+    """Whether to predict a noise/garbage transcript classification head (3rd output channel).
+    Requires out_channels to be divisible by 3."""
 
 
 @dataclass
@@ -156,6 +187,9 @@ class TrainConfig:
 
     num_workers: int = 4
     """Number of DataLoader workers."""
+
+    noise_scale_factor: float = 1.0
+    """Weight applied to the noise classification loss relative to the velocity loss."""
 
 
 @dataclass

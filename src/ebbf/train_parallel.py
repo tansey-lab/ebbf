@@ -4,6 +4,7 @@ import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
+import torch.nn.functional as F
 import wandb
 from omegaconf import OmegaConf
 from torch.distributed import destroy_process_group, init_process_group
@@ -84,6 +85,8 @@ class Trainer:
         self.ema_warmup_epochs: int = config.train.ema_warmup_epochs
         self.save_freq: int = config.train.save_freq
         self.wandb_enabled: bool = config.train.wandb_enabled
+        self.pred_noise: bool = config.model.get("pred_noise", True)
+        self.noise_scale_factor: float = config.train.noise_scale_factor
 
         if is_main_process:
             if self.wandb_enabled:
@@ -157,19 +160,30 @@ class Trainer:
             ),
             nuc_ctypes=(tx_batch["nuc2ctype"] if "nuc2ctype" in tx_batch else None),
         )
-        loss = torch.mean(torch.square(pred - tx_batch["target"].squeeze()))
 
-        ## scale loss to be on the absolute scale
-        loss = (0.25 * self.patch_size**2) * loss
+        ## Velocity loss on the first two output channels
+        velocity_pred = pred[:, :2]
+        vloss = torch.mean(torch.square(velocity_pred - tx_batch["target"].squeeze()))
+        ## Scale to be on the absolute scale
+        vloss = (0.25 * self.patch_size**2) * vloss
+
+        if self.pred_noise:
+            noise_pred = pred[:, 2]
+            nloss = F.binary_cross_entropy_with_logits(
+                noise_pred, target=tx_batch["tx_is_noise"], reduction="mean"
+            )
+            loss = vloss + self.noise_scale_factor * nloss
+        else:
+            loss = vloss
 
         ## gradient accumulation
         loss = loss / self.grad_accum_steps
-        return loss
+        return loss, vloss.detach(), (nloss.detach() if self.pred_noise else None)
 
     def _run_batch(self, batch, step: int, epoch: int):
         ## Accumulate gradients
         if (step + 1) % self.grad_accum_steps == 0:
-            loss = self._calculate_loss(batch)
+            loss, vloss, nloss = self._calculate_loss(batch)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
             self.optimizer.step()
@@ -179,12 +193,16 @@ class Trainer:
         else:
             if self.is_distributed:
                 with self.model.no_sync():  ## No need to sync when we don't take a step
-                    loss = self._calculate_loss(batch)
+                    loss, vloss, nloss = self._calculate_loss(batch)
                     loss.backward()
             else:
-                loss = self._calculate_loss(batch)
+                loss, vloss, nloss = self._calculate_loss(batch)
                 loss.backward()
-        return loss.item() * self.grad_accum_steps
+        return (
+            loss.item() * self.grad_accum_steps,
+            vloss.item() * self.grad_accum_steps,
+            (nloss.item() if nloss is not None else None),
+        )
 
     def _run_epoch(self, epoch):
         self.model.train(True)
@@ -205,10 +223,13 @@ class Trainer:
             pbar = enumerate(self.train_dataloader)
 
         for step, batch in pbar:
-            loss = self._run_batch(batch, step, epoch)
+            loss, vloss, nloss = self._run_batch(batch, step, epoch)
             if self.is_main_process:
                 if self.wandb_enabled:
-                    self.run.log({"Train loss (step)": loss})
+                    log_dict = {"Train loss (step)": loss, "Velocity loss (step)": vloss}
+                    if nloss is not None:
+                        log_dict["Noise loss (step)"] = nloss
+                    self.run.log(log_dict)
                 epoch_loss += loss / n_batches
                 if hasattr(pbar, "set_postfix"):
                     pbar.set_postfix(loss=f"{loss:.4f}")

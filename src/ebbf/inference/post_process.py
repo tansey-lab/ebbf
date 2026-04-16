@@ -124,6 +124,17 @@ def filter_unique_and_remap_tx(input_path: str | list[str], output_path: str, id
         pl.col("tx_gene_idx").replace_strict(idx2genes, default="None").alias("feature_name")
     )
 
+    ## Add noise columns (always present in output, with graceful fallback)
+    schema = df.collect_schema()
+    if "tx_noise_prob_1" in schema:
+        df = df.with_columns((pl.col("tx_noise_prob_1") > 0.5).alias("is_noise"))
+    else:
+        df = df.with_columns(pl.lit(False).alias("is_noise"))
+        df = df.with_columns(pl.lit(None).cast(pl.Float32).alias("tx_noise_prob_1"))
+
+    if "tx_noise_prob_0" not in schema:
+        df = df.with_columns(pl.lit(None).cast(pl.Float32).alias("tx_noise_prob_0"))
+
     ## Ship it
     df.sink_parquet(output_path)
     logger.info("filter_unique_and_remap_tx: done → %s", output_path)
@@ -905,18 +916,52 @@ def post_process(
     filter_unique_and_remap_tx(input_path=input_files, output_path=temp_path1, idx2genes=idx2genes)
     _log_step("Step 1", step_start, temp_path1, timings)
 
-    ## Step 2: Build double grid
+    ## Split noise rows from non-noise before Step 2 (DBSCAN runs only on real transcripts)
+    _step1_df = pl.scan_parquet(temp_path1)
+
+    temp_noise_meta_path = os.path.join(
+        work_dir, "temp_noise_meta-" + uuid.uuid4().hex + ".parquet"
+    )
+    _step1_df.select(
+        ["transcript_id", "is_noise", "tx_noise_prob_0", "tx_noise_prob_1"]
+    ).sink_parquet(temp_noise_meta_path)
+
+    temp_noise_rows_path = os.path.join(
+        work_dir, "temp_noise_rows-" + uuid.uuid4().hex + ".parquet"
+    )
+    _step1_df.filter(pl.col("is_noise")).select(
+        [
+            "transcript_id",
+            "feature_name",
+            "x",
+            "y",
+            "x_initial",
+            "y_initial",
+            "is_noise",
+            "tx_noise_prob_0",
+            "tx_noise_prob_1",
+        ]
+    ).sink_parquet(temp_noise_rows_path)
+
+    temp_path1b = os.path.join(work_dir, "temp1b-" + uuid.uuid4().hex + ".parquet")
+    _step1_df.filter(~pl.col("is_noise")).drop(
+        ["is_noise", "tx_noise_prob_0", "tx_noise_prob_1"]
+    ).sink_parquet(temp_path1b)
+
+    remove(temp_path1)
+
+    ## Step 2: Build double grid (non-noise transcripts only)
     logger.info("Step 2: building double grid...")
     step_start = time.perf_counter()
     temp_fname2 = "temp2-" + uuid.uuid4().hex
     temp_path2 = os.path.join(work_dir, temp_fname2)
     double_grid_and_group(
-        input_path=temp_path1, output_path=temp_path2, cluster_distance=cluster_distance
+        input_path=temp_path1b, output_path=temp_path2, cluster_distance=cluster_distance
     )
     _log_step("Step 2", step_start, temp_path2, timings)
 
-    ## Remove first intermediate file
-    remove(temp_path1)
+    ## Remove non-noise intermediate file
+    remove(temp_path1b)
 
     ## Step 3: Cluster within each grid section
     logger.info("Step 3: clustering within grid sections...")
@@ -962,7 +1007,7 @@ def post_process(
     ## Remove fourth intermediate file
     remove(temp_path4)
 
-    ## Step 6: Compute distances to original positions
+    ## Step 6: Compute distances to original positions (non-noise transcripts)
     if original_tx_fname is not None:
         logger.info("Step 6: computing distances to original positions...")
         step_start = time.perf_counter()
@@ -972,13 +1017,24 @@ def post_process(
             original_tx_fname=original_tx_fname,
         )
         _log_step("Step 6", step_start, output_fname, timings)
-        ## Remove fifth intermediate file
         remove(temp_path5)
+
+        ## Also compute distances for noise rows so they have consistent columns
+        temp_noise_with_dist_path = os.path.join(
+            work_dir, "temp_noise_with_dist-" + uuid.uuid4().hex + ".parquet"
+        )
+        calculate_tx_distances(
+            input_path=temp_noise_rows_path,
+            output_path=temp_noise_with_dist_path,
+            original_tx_fname=original_tx_fname,
+        )
+        remove(temp_noise_rows_path)
+        temp_noise_rows_path = temp_noise_with_dist_path
     else:
         logger.info("Step 6: skipping distance computation (no original transcripts provided)...")
         os.rename(temp_path5, output_fname)
 
-    ## Step 7: Create AnnData file
+    ## Step 7: Create AnnData file (from non-noise transcripts only)
     if anndata_fname is not None:
         logger.info("Step 7: creating AnnData file...")
         step_start = time.perf_counter()
@@ -989,6 +1045,23 @@ def post_process(
             cd_cutoff=cd_cutoff,
         )
         _log_step("Step 7", step_start, anndata_fname, timings)
+
+    ## Amend ef.parquet: join noise columns back onto non-noise rows, then append noise rows
+    logger.info("Amending ef.parquet with noise columns and appending noise rows...")
+    noise_meta = pl.scan_parquet(temp_noise_meta_path).with_columns(
+        pl.col("transcript_id").cast(pl.UInt64)
+    )
+    ef_ldf = pl.scan_parquet(output_fname).join(noise_meta, on="transcript_id", how="left")
+    noise_rows_ldf = pl.scan_parquet(temp_noise_rows_path).with_columns(
+        pl.col("transcript_id").cast(pl.UInt64)
+    )
+    combined_ldf = pl.concat([ef_ldf, noise_rows_ldf], how="diagonal")
+    tmp_out = output_fname + ".tmp"
+    combined_ldf.sink_parquet(tmp_out)
+    os.replace(tmp_out, output_fname)
+
+    remove(temp_noise_meta_path)
+    remove(temp_noise_rows_path)
 
     logger.info("Step timing summary (seconds): %s", timings)
     logger.info("DONE!")
