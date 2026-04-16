@@ -138,7 +138,6 @@ def infer(
     flow_inference: FlowInference,
     batch_size: int,
 ):
-
     dataloader = DataLoader(
         dataset,
         num_workers=0,

@@ -178,6 +178,29 @@ This generates:
 
 The `--xenium_dir` argument accepts either Xenium Ranger output or SpatialData zarr directories.
 
+## Nextflow pipeline
+
+The nf-core pipeline under `nextflow/` runs preprocess → train → infer → postprocess by default. To **reuse existing inference outputs** and start at postprocessing, pass **`--inference_results`** with a directory that contains `part-*.parquet` shards (same naming as the infer step: `part-0000.parquet`, `part-0001.parquet`, …).
+
+When `--inference_results` is set, training and inference are skipped; `model_weights`, `resume_training`, and `n_infer_workers` are not used.
+
+**Shard layout:**
+
+- **Multiple samples:** For each samplesheet row, shards must live under `<inference_results>/<sample_id>/part-*.parquet`, where `<sample_id>` matches the `sample` column in the CSV.
+- **Single sample:** If that path is empty, the pipeline falls back to a flat directory: `<inference_results>/part-*.parquet` (only when the samplesheet has one row).
+
+You still provide `--input` (samplesheet with `zarr_dir` per sample) and the usual preprocessing outputs (run preprocess, or use `--preprocess_dir` with `stdata.npz` and `transcripts.parquet`).
+
+Example:
+
+```bash
+nextflow run nextflow/main.nf \
+  --input samplesheet.csv \
+  --outdir results \
+  --inference_results /path/to/inference_shards \
+  -profile docker
+```
+
 ## Integration test (mouse ileum)
 
 To run the local integration test on the sample mouse ileum dataset:

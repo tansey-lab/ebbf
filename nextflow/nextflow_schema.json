@@ -62,6 +62,14 @@
                     "help_text": "When provided, skips the preprocessing step and uses existing files from this directory. The directory must contain 'stdata.npz' and 'transcripts.parquet'. The zarr/xenium input is still required for metadata.",
                     "fa_icon": "fas fa-folder"
                 },
+                "inference_results": {
+                    "type": "string",
+                    "format": "directory-path",
+                    "exists": true,
+                    "description": "Directory containing inference part-*.parquet shards to start at postprocessing.",
+                    "help_text": "When set, skips training and inference and runs postprocessing on existing shards (same part-*.parquet naming as the infer step). Multi-sample: use <inference_results>/<sample_id>/part-*.parquet (sample_id matches the samplesheet sample column). Single-sample: if that path is empty, falls back to <inference_results>/part-*.parquet. When set, model_weights, resume_training, and n_infer_workers are unused.",
+                    "fa_icon": "fas fa-forward"
+                },
                 "n_postprocess_workers": {
                     "type": "integer",
                     "default": 4,

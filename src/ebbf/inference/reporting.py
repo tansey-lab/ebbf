@@ -1444,6 +1444,328 @@ updateLegend();
     logger.info(f"Saved {output_path} ({fsize:.1f} MB)")
 
 
+def generate_morphology_report(adata_ebbf, adata_default, xenium_dir, output_dir):
+    """
+    Generate a morphology comparison HTML report.
+
+    Compares geometric quality metrics of cell (and nucleus) boundaries between
+    the default Xenium segmentation and the subset of EBBF cells classified as
+    "original" (those that kept the default boundary, i.e. were not split or
+    created de-novo).  The population-level shift in distributions reveals
+    whether EBBF preferentially reassigns cells with particular shapes.
+
+    Metrics computed per cell:
+      cell_area, cell_perimeter, eccentricity, sphericity, solidity,
+      convexity, circularity, compactness (and nucleus equivalents).
+    """
+    from ebbf.data.formats import has_cell_boundaries, load_cell_boundaries, load_nucleus_boundaries
+    from ebbf.morphology import calculate_morphological_statistics
+
+    output_path = Path(output_dir) / "morphology_report.html"
+    logger.info("Generating morphology report...")
+
+    if not has_cell_boundaries(xenium_dir):
+        logger.warning("  No cell boundaries found in %s — skipping morphology report", xenium_dir)
+        return
+
+    logger.info("  Loading cell boundaries from %s...", xenium_dir)
+    cell_boundaries = load_cell_boundaries(xenium_dir)
+
+    nucleus_boundaries = None
+    try:
+        nucleus_boundaries = load_nucleus_boundaries(xenium_dir)
+    except Exception:
+        logger.info("  No nucleus boundaries found — nucleus metrics will be skipped")
+
+    # --- default segmentation (before) ---
+    logger.info("  Computing morphological statistics for default segmentation...")
+    try:
+        stats_before = calculate_morphological_statistics(
+            adata_default, cell_boundaries, nucleus_boundaries
+        )
+    except Exception as e:
+        logger.warning(f"  Failed to compute default morphology stats: {e}")
+        return
+
+    # --- EBBF original cells (after) ---
+    # Original cells share the same polygon boundaries as the default segmentation.
+    # Split / de-novo cells do not have stored polygon boundaries so they are
+    # excluded here; their absence is itself informative at the population level.
+    logger.info("  Computing morphological statistics for EBBF original cells...")
+    adata_ebbf_orig = adata_ebbf[adata_ebbf.obs["cell_category"] == "original"].copy()
+    try:
+        stats_after = calculate_morphological_statistics(
+            adata_ebbf_orig, cell_boundaries, nucleus_boundaries
+        )
+    except Exception as e:
+        logger.warning(f"  Failed to compute EBBF morphology stats: {e}")
+        return
+
+    n_before = len(stats_before)
+    n_after = len(stats_after)
+    n_split = int((adata_ebbf.obs["cell_category"] == "split").sum())
+    n_denovo = int((adata_ebbf.obs["cell_category"] == "denovo").sum())
+    logger.info(
+        f"  Default: {n_before:,} cells | EBBF original: {n_after:,} | "
+        f"split: {n_split:,} | de novo: {n_denovo:,}"
+    )
+
+    # ------------------------------------------------------------------ #
+    # Save raw tables as parquet                                          #
+    # ------------------------------------------------------------------ #
+    morph_default_path = Path(output_dir) / "morphology_stats_default.parquet"
+    morph_ebbf_path = Path(output_dir) / "morphology_stats_ebbf_original.parquet"
+
+    stats_before.rename_axis("cell_id").reset_index().to_parquet(morph_default_path, index=False)
+    logger.info(f"  Saved {morph_default_path}")
+
+    stats_after.rename_axis("cell_id").reset_index().to_parquet(morph_ebbf_path, index=False)
+    logger.info(f"  Saved {morph_ebbf_path}")
+
+    # ------------------------------------------------------------------ #
+    # Build figures                                                        #
+    # ------------------------------------------------------------------ #
+    images = {}
+
+    BLUE = "#1f77b4"
+    ORANGE = "#ff7f0e"
+    BINS = 80
+
+    cell_metrics = [
+        ("cell_area", "Cell Area (µm²)", False),
+        ("cell_perimeter", "Cell Perimeter (µm)", False),
+        ("cell_eccentricity", "Eccentricity\n(minor/major axis, 1 = circle)", True),
+        ("cell_sphericity", "Sphericity\n(inner/outer radius, 1 = circle)", True),
+        ("cell_solidity", "Solidity\n(area / convex hull area, 1 = convex)", True),
+        ("cell_convexity", "Convexity\n(hull perim / perim, 1 = convex)", True),
+        ("cell_circularity", "Circularity\n(4π·area / hull perim², 1 = circle)", True),
+        ("cell_compactness", "Compactness\n(4π·area / perim², 1 = circle)", True),
+    ]
+    if "cn_ratio" in stats_before.columns:
+        cell_metrics.insert(0, ("cn_ratio", "Cell/Nucleus Area Ratio", False))
+
+    nucleus_metrics = [
+        ("nucleus_area", "Nucleus Area (µm²)", False),
+        ("nucleus_eccentricity", "Nucleus Eccentricity", True),
+        ("nucleus_sphericity", "Nucleus Sphericity", True),
+        ("nucleus_solidity", "Nucleus Solidity", True),
+        ("nucleus_convexity", "Nucleus Convexity", True),
+        ("nucleus_circularity", "Nucleus Circularity", True),
+        ("nucleus_compactness", "Nucleus Compactness", True),
+    ]
+    # Only include nucleus metrics if they were computed
+    nucleus_metrics = [
+        (col, lbl, bounded) for col, lbl, bounded in nucleus_metrics if col in stats_before.columns
+    ]
+
+    def _plot_metric_grid(metrics, title, key):
+        # Only plot metrics present in both DataFrames
+        metrics = [
+            (col, lbl, bounded)
+            for col, lbl, bounded in metrics
+            if col in stats_before.columns and col in stats_after.columns
+        ]
+        if not metrics:
+            return
+        ncols = 3
+        nrows = (len(metrics) + ncols - 1) // ncols
+        fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 5, nrows * 3.8))
+        axes = np.array(axes).flatten()
+
+        for ax, (col, label, bounded) in zip(axes, metrics):
+            b = stats_before[col].dropna().values
+            a = stats_after[col].dropna().values
+            if bounded:
+                xlim = (0.0, 1.0)
+                bins = np.linspace(0, 1, BINS + 1)
+            else:
+                upper = np.percentile(np.concatenate([b, a]), 99)
+                xlim = (0.0, upper)
+                bins = np.linspace(0, upper, BINS + 1)
+
+            ax.hist(
+                b, bins=bins, alpha=0.55, density=True, color=BLUE, label=f"Default (n={len(b):,})"
+            )
+            ax.hist(
+                a,
+                bins=bins,
+                alpha=0.55,
+                density=True,
+                color=ORANGE,
+                label=f"EBBF original (n={len(a):,})",
+            )
+            ax.set_xlim(xlim)
+            ax.set_xlabel(label, fontsize=8)
+            ax.set_ylabel("Density", fontsize=8)
+            ax.tick_params(labelsize=7)
+            ax.legend(fontsize=7)
+
+        # Hide unused axes
+        for ax in axes[len(metrics) :]:
+            ax.set_visible(False)
+
+        plt.suptitle(title, fontsize=13, y=1.01)
+        plt.tight_layout()
+        images[key] = _fig_to_base64(fig)
+
+    _plot_metric_grid(cell_metrics, "Cell Shape Metrics — Default vs EBBF Original", "cell_metrics")
+    if nucleus_metrics:
+        _plot_metric_grid(
+            nucleus_metrics, "Nucleus Shape Metrics — Default vs EBBF Original", "nucleus_metrics"
+        )
+
+    # Per-metric ECDFs for cell shape quality metrics (bounded 0-1)
+    shape_metrics = [
+        (col, lbl)
+        for col, lbl, bounded in cell_metrics
+        if bounded and col in stats_before.columns and col in stats_after.columns
+    ]
+    if shape_metrics:
+        ncols = 3
+        nrows = (len(shape_metrics) + ncols - 1) // ncols
+        fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 5, nrows * 3.5))
+        axes = np.array(axes).flatten()
+        for ax, (col, label) in zip(axes, shape_metrics):
+            b = np.sort(stats_before[col].dropna().values)
+            a = np.sort(stats_after[col].dropna().values)
+            ax.plot(b, np.linspace(0, 1, len(b)), color=BLUE, label="Default", linewidth=1.5)
+            ax.plot(
+                a, np.linspace(0, 1, len(a)), color=ORANGE, label="EBBF original", linewidth=1.5
+            )
+            ax.set_xlim(0, 1)
+            ax.set_xlabel(label, fontsize=8)
+            ax.set_ylabel("Cumulative Fraction", fontsize=8)
+            ax.tick_params(labelsize=7)
+            ax.legend(fontsize=7)
+        for ax in axes[len(shape_metrics) :]:
+            ax.set_visible(False)
+        plt.suptitle("ECDF of Cell Shape Quality Metrics", fontsize=13, y=1.01)
+        plt.tight_layout()
+        images["cell_ecdfs"] = _fig_to_base64(fig)
+
+    # ------------------------------------------------------------------ #
+    # Summary statistics table                                            #
+    # ------------------------------------------------------------------ #
+    all_metrics = [(col, lbl) for col, lbl, _ in cell_metrics + nucleus_metrics]
+    summary_rows = []
+    for col, label in all_metrics:
+        if col not in stats_before.columns:
+            continue
+        b = stats_before[col].dropna()
+        a = stats_after[col].dropna() if col in stats_after.columns else pd.Series([], dtype=float)
+        summary_rows.append(
+            {
+                "Metric": label.replace("\n", " "),
+                "Default — Mean": f"{b.mean():.3f}",
+                "Default — Median": f"{b.median():.3f}",
+                "Default — Std": f"{b.std():.3f}",
+                "EBBF Orig — Mean": f"{a.mean():.3f}" if len(a) else "—",
+                "EBBF Orig — Median": f"{a.median():.3f}" if len(a) else "—",
+                "EBBF Orig — Std": f"{a.std():.3f}" if len(a) else "—",
+            }
+        )
+
+    def summary_table_html():
+        if not summary_rows:
+            return ""
+        cols = list(summary_rows[0].keys())
+        html = "<table><thead><tr>"
+        for c in cols:
+            html += f"<th>{c}</th>"
+        html += "</tr></thead><tbody>"
+        for row in summary_rows:
+            html += "<tr>" + "".join(f"<td>{v}</td>" for v in row.values()) + "</tr>"
+        html += "</tbody></table>"
+        return html
+
+    nucleus_section = ""
+    if "nucleus_metrics" in images:
+        nucleus_section = f"""
+<div class="section">
+<h2>Nucleus Shape Metrics</h2>
+<p>Same comparison for nucleus boundary polygons. Nucleus boundaries are unchanged
+by EBBF; differences here reflect population composition (which cells are "original").</p>
+<img src="data:image/png;base64,{images["nucleus_metrics"]}">
+</div>"""
+
+    ecdf_section = ""
+    if "cell_ecdfs" in images:
+        ecdf_section = f"""
+<div class="section">
+<h2>ECDF of Shape Quality Metrics</h2>
+<p>Cumulative distribution functions for bounded (0–1) shape quality metrics.
+A rightward shift indicates more "regular" (circular / convex) cells in that population.</p>
+<img src="data:image/png;base64,{images["cell_ecdfs"]}">
+</div>"""
+
+    html = f"""<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<title>Morphology Report — Default vs EBBF</title>
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+         max-width: 1500px; margin: 0 auto; padding: 20px; background: #fafafa; color: #333; }}
+  h1 {{ border-bottom: 3px solid #2c3e50; padding-bottom: 10px; }}
+  h2 {{ color: #1a5276; margin-top: 40px; border-left: 4px solid #1a5276; padding-left: 12px; }}
+  .section {{ background: white; border-radius: 8px; padding: 24px; margin: 20px 0;
+              box-shadow: 0 2px 6px rgba(0,0,0,0.08); }}
+  img {{ max-width: 100%; height: auto; }}
+  table {{ border-collapse: collapse; font-size: 12px; width: 100%; }}
+  th {{ background: #2c3e50; color: white; padding: 8px 10px; text-align: center; }}
+  td {{ border: 1px solid #ddd; padding: 5px 8px; text-align: center; }}
+  tbody tr:nth-child(even) {{ background: #f8f9fa; }}
+  tbody tr:hover {{ background: #e8f4f8; }}
+  td:first-child {{ text-align: left; font-weight: bold; }}
+  .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+              gap: 12px; margin-bottom: 20px; }}
+  .stat-card {{ background: #ecf0f1; border-radius: 6px; padding: 15px; text-align: center; }}
+  .stat-card .value {{ font-size: 28px; font-weight: bold; color: #2c3e50; }}
+  .stat-card .label {{ font-size: 12px; color: #777; margin-top: 4px; }}
+</style>
+</head><body>
+
+<h1>Cell Morphology Report</h1>
+<p><b>Comparison:</b> Default Xenium segmentation (all cells with polygon boundaries) vs
+EBBF "original" cells (cells retained without splitting in the EBBF resegmentation).
+Split and de-novo cells are excluded because they do not have pre-existing polygon boundaries
+stored in the Xenium output.  The population-level distribution shift reveals whether EBBF
+preferentially reassigns or splits cells of particular shapes.</p>
+
+<div class="section">
+<h2>Overview</h2>
+<div class="summary">
+  <div class="stat-card"><div class="value">{n_before:,}</div><div class="label">Default Cells</div></div>
+  <div class="stat-card"><div class="value">{n_after:,}</div><div class="label">EBBF Original Cells</div></div>
+  <div class="stat-card"><div class="value">{n_split:,}</div><div class="label">EBBF Split Cells</div></div>
+  <div class="stat-card"><div class="value">{n_denovo:,}</div><div class="label">EBBF De Novo Cells</div></div>
+  <div class="stat-card"><div class="value">{n_before - n_after:,}</div><div class="label">Cells Split / Reassigned</div></div>
+</div>
+</div>
+
+<div class="section">
+<h2>Cell Shape Metrics</h2>
+<p>Overlaid histograms for each geometric quality metric. <span style="color:#1f77b4;font-weight:bold;">Blue</span> = all default cells,
+<span style="color:#ff7f0e;font-weight:bold;">Orange</span> = EBBF original cells (subset).
+Shifts between distributions indicate which cell morphologies are enriched or depleted
+after EBBF resegmentation.</p>
+<img src="data:image/png;base64,{images["cell_metrics"]}">
+</div>
+
+{ecdf_section}
+
+{nucleus_section}
+
+<div class="section">
+<h2>Summary Statistics</h2>
+{summary_table_html()}
+</div>
+
+</body></html>"""
+
+    output_path.write_text(html)
+    logger.info(f"Saved {output_path}")
+
+
 def reporting(
     anndata_fname: str,
     xenium_dir: str,
@@ -1519,5 +1841,9 @@ def reporting(
         generate_choropleth_report(adata_diff, gdf_boundaries, output_dir)
     else:
         logger.warning("Step 4: skipping choropleth report (too few cells/genes for clustering)")
+
+    # Step 5: Morphology report
+    logger.info("Step 5: generating morphology report...")
+    generate_morphology_report(adata_ebbf, adata_default, xenium_dir, output_dir)
 
     logger.info("DONE! All reports generated.")
