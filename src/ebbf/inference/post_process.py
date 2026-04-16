@@ -306,8 +306,12 @@ def grid_level_cluster(input_path: str, output_path: str, epsilon: float, n_work
     ctx = mp.get_context("spawn")
     in_q, out_q = ctx.Queue(), ctx.Queue()
 
-    ## Spin up the workers (use ctx.Process so spawn is respected — avoids fork-after-polars/Rayon deadlock)
-    workers = [ctx.Process(target=_dbscan_worker, args=(in_q, out_q, epsilon, output_path)) for _ in range(n_workers)]
+    ## Spin up the workers, use ctx.Process so spawn is respected
+    ## avoids fork-after-polars/Rayon deadlock
+    workers = [
+        ctx.Process(target=_dbscan_worker, args=(in_q, out_q, epsilon, output_path))
+        for _ in range(n_workers)
+    ]
     for w in workers:
         w.start()
 
