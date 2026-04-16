@@ -67,7 +67,7 @@ class DataConfig:
     max_garbage_intercellular_ratio: float = 10.0
     """Maximum ratio of intercellular-to-uniform garbage transcripts."""
 
-    max_nucleus_swap_prob: float = 0.0
+    max_nucleus_swap_prob: float = 0.20
     """Maximum probability of swapping a transcript's nucleus of origin with a nearby nucleus."""
 
     nucleus_swap_radius: float = 15.0
@@ -99,8 +99,9 @@ class ModelConfig:
     model_channels: int = 128
     """Base number of channels in the model."""
 
-    out_channels: int = 128
-    """Number of output channels from the UNet."""
+    out_channels: int = 192
+    """Number of output channels from the UNet.
+    Must be divisible by 3 when pred_noise=True."""
 
     num_blocks: int = 2
     """Number of residual blocks per resolution level."""

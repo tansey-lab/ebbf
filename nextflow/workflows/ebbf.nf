@@ -149,6 +149,7 @@ workflow EBBF {
         .join(ch_dataset)
         .join(ch_transcripts)
         .join(ch_samplesheet)
+        .join(EBBF_POSTPROCESS_PREPARE.out.noise_meta)
 
     EBBF_POSTPROCESS_MERGE(ch_postprocess_merge_input)
     ch_versions = ch_versions.mix(EBBF_POSTPROCESS_MERGE.out.versions.first())

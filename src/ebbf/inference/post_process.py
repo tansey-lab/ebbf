@@ -533,9 +533,16 @@ def post_process_prepare(
     dataset: STDataset,
     cluster_distance: float,
     output_fname: str,
+    noise_meta_fname: str | None = None,
     work_dir: str = ".",
     n_workers: int | None = None,
 ):
+    """Run steps 1–4: dedup, grid, DBSCAN, connected components.
+
+    If ``noise_meta_fname`` is provided, noise transcripts are separated before
+    DBSCAN and their metadata (transcript_id, is_noise, tx_noise_prob_*) is
+    written there for ``post_process_merge`` to re-attach.
+    """
     if n_workers is None:
         n_workers = get_num_cpus()
     os.makedirs(work_dir, exist_ok=True)
@@ -550,6 +557,40 @@ def post_process_prepare(
     step_start = time.perf_counter()
     filter_unique_and_remap_tx(input_path=input_files, output_path=temp_path1, idx2genes=idx2genes)
     _log_step("Step 1", step_start, temp_path1, timings)
+
+    ## Save noise metadata and filter to non-noise before DBSCAN.
+    ## noise_meta contains ALL rows with noise probability columns (for joining back onto
+    ## non-noise rows later) plus full positional data for noise rows (for appending later).
+    if noise_meta_fname is not None:
+        _step1_df = pl.scan_parquet(temp_path1)
+
+        ## All rows: just the noise probability columns for joining back later
+        ## Noise rows: also keep positions / feature_name so we can append them to ef.parquet
+        _step1_df.with_columns(
+            ## ensure x_initial / y_initial are present for noise rows (they came from infer)
+            pl.col("x").alias("x"),
+            pl.col("y").alias("y"),
+        ).select(
+            [
+                "transcript_id",
+                "feature_name",
+                "x",
+                "y",
+                "x_initial",
+                "y_initial",
+                "is_noise",
+                "tx_noise_prob_0",
+                "tx_noise_prob_1",
+            ]
+        ).sink_parquet(noise_meta_fname)
+        logger.info("Noise metadata written → %s", noise_meta_fname)
+
+        temp_path1b = os.path.join(work_dir, "temp1b-" + uuid.uuid4().hex + ".parquet")
+        _step1_df.filter(~pl.col("is_noise")).drop(
+            ["is_noise", "tx_noise_prob_0", "tx_noise_prob_1"]
+        ).sink_parquet(temp_path1b)
+        remove(temp_path1)
+        temp_path1 = temp_path1b
 
     logger.info("Step 2: building double grid (n_workers=%d)", n_workers)
     step_start = time.perf_counter()
@@ -584,6 +625,7 @@ def post_process_merge(
     anndata_fname: str | None = "ef.h5ad",
     cd_cutoff: float = 2.0,
     original_tx_fname: str | None = None,
+    noise_meta_fname: str | None = None,
     work_dir: str = ".",
 ):
     os.makedirs(work_dir, exist_ok=True)
@@ -606,6 +648,42 @@ def post_process_merge(
             dataset=dataset,
             cd_cutoff=cd_cutoff,
         )
+
+    ## Re-attach noise probability columns and append noise rows to ef.parquet
+    if noise_meta_fname is not None:
+        logger.info("Re-attaching noise metadata from %s", noise_meta_fname)
+        noise_meta = pl.scan_parquet(noise_meta_fname).with_columns(
+            pl.col("transcript_id").cast(pl.UInt64)
+        )
+
+        ## Step A: join is_noise + prob cols back onto the non-noise ef rows
+        probs_df = noise_meta.select(
+            ["transcript_id", "is_noise", "tx_noise_prob_0", "tx_noise_prob_1"]
+        )
+        ef_ldf = pl.scan_parquet(output_fname).join(probs_df, on="transcript_id", how="left")
+
+        ## Step B: build noise rows (positions are already in noise_meta from step1)
+        noise_rows = noise_meta.filter(pl.col("is_noise"))
+        if original_tx_fname is not None:
+            tx_df = (
+                pl.scan_parquet(original_tx_fname)
+                .select(["transcript_id", "overlaps_nucleus"])
+                .with_columns(pl.col("transcript_id").cast(pl.UInt64))
+            )
+            noise_rows = noise_rows.join(tx_df, on="transcript_id", how="left")
+            noise_rows = noise_rows.with_columns(
+                distance=(
+                    (pl.col("x") - pl.col("x_initial")).pow(2)
+                    + (pl.col("y") - pl.col("y_initial")).pow(2)
+                ).sqrt()
+            )
+
+        combined = pl.concat([ef_ldf, noise_rows], how="diagonal")
+        tmp_out = output_fname + ".tmp"
+        combined.sink_parquet(tmp_out)
+        os.replace(tmp_out, output_fname)
+        logger.info("Noise rows merged into %s", output_fname)
+
     return "Success!"
 
 

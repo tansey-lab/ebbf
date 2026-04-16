@@ -84,6 +84,15 @@ def main():
         default=None,
         help="Number of CPU workers for prepare stage (default: auto)",
     )
+    parser_prepare.add_argument(
+        "--noise_meta_output",
+        type=str,
+        default=None,
+        help=(
+            "Path to write noise metadata parquet"
+            " (enables noise transcript separation before DBSCAN)"
+        ),
+    )
 
     # map
     parser_map = subparsers.add_parser(
@@ -125,6 +134,15 @@ def main():
         default=None,
         help="Path to original transcripts parquet file for distance computation",
     )
+    parser_merge.add_argument(
+        "--noise_meta",
+        type=str,
+        default=None,
+        help=(
+            "Path to noise metadata parquet from prepare stage"
+            " (re-attaches noise columns and appends noise rows)"
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -149,6 +167,7 @@ def main():
             dataset=stdata,
             cluster_distance=args.cluster_distance,
             output_fname=args.output,
+            noise_meta_fname=args.noise_meta_output,
             n_workers=args.n_workers,
         )
     elif args.command == "map":
@@ -170,5 +189,6 @@ def main():
             anndata_fname=anndata_fname,
             cd_cutoff=args.cd_cutoff,
             original_tx_fname=args.original_transcripts,
+            noise_meta_fname=args.noise_meta,
             work_dir=args.work_dir,
         )
