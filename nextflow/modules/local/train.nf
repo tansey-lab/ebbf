@@ -91,6 +91,7 @@ model:
   channels_per_head: ${params.channels_per_head}
   nuc_channel_frac: ${params.nuc_channel_frac}
   splat: true
+  pred_noise: ${params.pred_noise}
 
 optim:
   optimizer: AdamW
@@ -111,6 +112,7 @@ train:
   time_skew: ${params.time_skew}
   num_workers: ${params.train_num_workers}
   wandb_enabled: ${params.wandb_enabled}
+  noise_scale_factor: ${params.noise_scale_factor}
 
 infer:
   tx_fname: null

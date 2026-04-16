@@ -36,11 +36,18 @@ def _fig_to_base64(fig, dpi=150):
 
 
 def _load_xenium_default(xenium_dir):
-    """Load the default Xenium AnnData table via spatialdata_io."""
-    import spatialdata_io
+    """Load the default Xenium SpatialData object, auto-detecting input format."""
+    from ebbf.data.formats import InputFormat, detect_input_format
 
-    sd = spatialdata_io.xenium(xenium_dir, cells_as_circles=True)
-    return sd
+    fmt = detect_input_format(xenium_dir)
+    if fmt == InputFormat.SPATIALDATA:
+        import spatialdata
+
+        return spatialdata.read_zarr(xenium_dir)
+    else:
+        import spatialdata_io
+
+        return spatialdata_io.xenium(xenium_dir, cells_as_circles=True)
 
 
 def _compute_diff_adata(adata_ebbf, adata_default):
