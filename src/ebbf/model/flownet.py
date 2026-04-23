@@ -137,6 +137,7 @@ class GridDecoder(nn.Module):
         img_resolution: int,
         img_range: float,
         n_channels: int,
+        n_outputs: int = 2,
         splat: bool = False,
     ):
         super().__init__()
@@ -144,6 +145,7 @@ class GridDecoder(nn.Module):
         self.splat = splat
         self.img_range = img_range
         self.grid_size = img_resolution
+        self.n_outputs = n_outputs
         self.embed_table = nn.Embedding(n_items, n_channels)
         torch.nn.init.kaiming_uniform_(self.embed_table.weight)
 
@@ -230,11 +232,11 @@ class GridDecoder(nn.Module):
         else:
             grid_emb = self.nearest_grid_decode(X, xy, seqlens)
 
-        grid_emb = rearrange(grid_emb, "S (two C)-> S two C", two=2)  ## S x 2 x C
+        grid_emb = rearrange(grid_emb, "S (O C)-> S O C", O=self.n_outputs)  ## S x O x C
 
         ## Take dot products against embeddings
         item_emb = self.embed_table(items).unsqueeze(-2)  ## S x 1 x C
-        x = torch.sum(grid_emb * item_emb, dim=-1)
+        x = torch.sum(grid_emb * item_emb, dim=-1)  ## S x O
         return x
 
 
@@ -254,6 +256,7 @@ class TxFlowUNet(nn.Module):
         self.img_resolution: int = config.model.img_resolution
 
         self.unet = DhariwalUNet(config)
+        self.pred_noise: bool = config.model.get("pred_noise", True)
 
         self.nuc_condition = config.model.conditioned == "nuc"
         if self.nuc_condition:
@@ -278,11 +281,13 @@ class TxFlowUNet(nn.Module):
             splat=config.model.get("splat", False),
         )
 
+        n_outputs = 3 if self.pred_noise else 2
         self.tx_grid_decoder = GridDecoder(
             config.n_genes,
             img_resolution=self.img_resolution,
             img_range=self.padding_bound,
-            n_channels=(self.out_channels // 2),
+            n_channels=(self.out_channels // n_outputs),
+            n_outputs=n_outputs,
             splat=config.model.get("splat", False),
         )
 

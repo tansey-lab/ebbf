@@ -7,6 +7,7 @@ process EBBF_POSTPROCESS_PREPARE {
 
     output:
     tuple val(meta), path("*.step4.parquet"), emit: step4
+    tuple val(meta), path("*.noise_meta.parquet"), emit: noise_meta
     path "versions.yml", emit: versions
 
     script:
@@ -20,6 +21,7 @@ process EBBF_POSTPROCESS_PREPARE {
         --dataset ${dataset_file} \\
         --cluster_distance ${params.cluster_distance} \\
         --output ${prefix}.step4.parquet \\
+        --noise_meta_output ${prefix}.noise_meta.parquet \\
         ${n_workers_arg} \\
         --work_dir . \\
         ${args}
@@ -68,7 +70,7 @@ process EBBF_POSTPROCESS_MERGE {
     label 'process_medium'
 
     input:
-    tuple val(meta), path(mapped_parts), path(dataset_file), path(original_transcripts), path(zarr_dir)
+    tuple val(meta), path(mapped_parts), path(dataset_file), path(original_transcripts), path(zarr_dir), path(noise_meta)
 
     output:
     tuple val(meta), path("*.parquet"), emit: results
@@ -80,6 +82,7 @@ process EBBF_POSTPROCESS_MERGE {
     def prefix = task.ext.prefix ?: "${meta.id}"
     def cd_cutoff = params.cd_cutoff ?: 2.0
     def orig_tx_arg = "--original_transcripts ${original_transcripts}"
+    def noise_meta_arg = "--noise_meta ${noise_meta}"
     """
     ebbf-postprocess \\
         merge \\
@@ -90,6 +93,7 @@ process EBBF_POSTPROCESS_MERGE {
         --cd_cutoff ${cd_cutoff} \\
         --work_dir . \\
         ${orig_tx_arg} \\
+        ${noise_meta_arg} \\
         ${args}
 
     cat <<-END_VERSIONS > versions.yml
