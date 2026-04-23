@@ -54,6 +54,16 @@ def _add_denovo_filter_args(parser: argparse.ArgumentParser):
             " Defaults to '<anndata_output stem>.denovo_filter_report.parquet'."
         ),
     )
+    parser.add_argument(
+        "--denovo_filter_mqc",
+        type=str,
+        default=None,
+        help=(
+            "Path to write a MultiQC custom-content HTML summary of the"
+            " de novo filter. Defaults to"
+            " '<anndata_output stem>.denovo_filter_mqc.html'."
+        ),
+    )
 
 
 def main():
@@ -195,6 +205,7 @@ def main():
             denovo_min_tx_pctile=args.denovo_min_tx_pctile,
             denovo_min_area_pctile=args.denovo_min_area_pctile,
             denovo_filter_report_fname=args.denovo_filter_report,
+            denovo_filter_mqc_fname=args.denovo_filter_mqc,
         )
     elif args.command == "prepare":
         post_process_prepare(
@@ -230,4 +241,5 @@ def main():
             denovo_min_tx_pctile=args.denovo_min_tx_pctile,
             denovo_min_area_pctile=args.denovo_min_area_pctile,
             denovo_filter_report_fname=args.denovo_filter_report,
+            denovo_filter_mqc_fname=args.denovo_filter_mqc,
         )

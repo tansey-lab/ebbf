@@ -76,6 +76,7 @@ process EBBF_POSTPROCESS_MERGE {
     tuple val(meta), path("${prefix}.parquet"), emit: results
     tuple val(meta), path("${prefix}.h5ad"), emit: anndata
     tuple val(meta), path("${prefix}.denovo_filter_report.parquet"), emit: denovo_filter_report
+    tuple val(meta), path("${prefix}.denovo_filter_mqc.html"), emit: denovo_filter_mqc
     path "versions.yml", emit: versions
 
     script:
@@ -92,6 +93,7 @@ process EBBF_POSTPROCESS_MERGE {
         --output ${prefix}.parquet \\
         --anndata_output ${prefix}.h5ad \\
         --denovo_filter_report ${prefix}.denovo_filter_report.parquet \\
+        --denovo_filter_mqc ${prefix}.denovo_filter_mqc.html \\
         --cd_cutoff ${cd_cutoff} \\
         --work_dir . \\
         ${orig_tx_arg} \\

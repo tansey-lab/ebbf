@@ -631,6 +631,7 @@ def post_process_merge(
     denovo_min_tx_pctile: float = 25.0,
     denovo_min_area_pctile: float = 5.0,
     denovo_filter_report_fname: str | None = None,
+    denovo_filter_mqc_fname: str | None = None,
 ):
     os.makedirs(work_dir, exist_ok=True)
     temp_path = os.path.join(work_dir, "temp-merge-" + uuid.uuid4().hex + ".parquet")
@@ -654,6 +655,7 @@ def post_process_merge(
             denovo_min_tx_pctile=denovo_min_tx_pctile,
             denovo_min_area_pctile=denovo_min_area_pctile,
             denovo_filter_report_fname=denovo_filter_report_fname,
+            denovo_filter_mqc_fname=denovo_filter_mqc_fname,
         )
 
     ## Re-attach noise probability columns and append noise rows to ef.parquet
@@ -802,6 +804,81 @@ def _create_anndata_from_lazyframe(
     return adata
 
 
+def _write_denovo_filter_mqc_html(
+    output_path: str,
+    *,
+    sample_id: str,
+    n_before: int,
+    n_after: int,
+    tx_threshold: float,
+    area_threshold: float,
+    tx_pctile: float,
+    area_pctile: float,
+    area_source: str,
+    report: pl.DataFrame,
+):
+    """Write a MultiQC-custom-content HTML summary for the de novo filter.
+
+    MultiQC picks up files ending in ``_mqc.html`` automatically; the leading
+    HTML comment supplies the section metadata so the block renders as its own
+    named section in the report.
+    """
+    if report.height > 0:
+        n_fail_tx_only = int(((~report["passes_tx_filter"]) & report["passes_area_filter"]).sum())
+        n_fail_area_only = int((report["passes_tx_filter"] & (~report["passes_area_filter"])).sum())
+        n_fail_both = int(((~report["passes_tx_filter"]) & (~report["passes_area_filter"])).sum())
+        n_tx_arr = report["n_tx"].to_numpy()
+        area_arr = report["area"].to_numpy()
+        tx_med = float(np.median(n_tx_arr)) if n_tx_arr.size else 0.0
+        area_med = float(np.median(area_arr)) if area_arr.size else 0.0
+    else:
+        n_fail_tx_only = n_fail_area_only = n_fail_both = 0
+        tx_med = area_med = 0.0
+
+    pct_kept = (100.0 * n_after / n_before) if n_before else 0.0
+    pct_dropped = 100.0 - pct_kept if n_before else 0.0
+
+    html = f"""<!--
+id: 'ebbf_denovo_filter'
+section_name: 'EBB&amp;Flow De Novo Cell Filter'
+description: >-
+    Filtering of de novo cells against the input segmentation. De novo clusters whose
+    transcript count falls below the p{tx_pctile:g} input cell count, or whose
+    convex-hull area falls below the p{area_pctile:g} input cell area ({area_source}),
+    are dropped before AnnData construction.
+plot_type: 'html'
+pconfig:
+    id: 'ebbf_denovo_filter_plot'
+-->
+<div>
+<h4>Sample: {sample_id}</h4>
+<table class="table" style="width:auto">
+  <thead><tr><th>Metric</th><th style="text-align:right">Value</th></tr></thead>
+  <tbody>
+    <tr><td>De novo clusters evaluated</td><td style="text-align:right">{n_before:,}</td></tr>
+    <tr><td>Kept</td><td style="text-align:right">{n_after:,} ({pct_kept:.1f}%)</td></tr>
+    <tr><td>Dropped</td>
+        <td style="text-align:right">{n_before - n_after:,} ({pct_dropped:.1f}%)</td></tr>
+    <tr><td>&nbsp;&nbsp;failed tx filter only</td>
+        <td style="text-align:right">{n_fail_tx_only:,}</td></tr>
+    <tr><td>&nbsp;&nbsp;failed area filter only</td>
+        <td style="text-align:right">{n_fail_area_only:,}</td></tr>
+    <tr><td>&nbsp;&nbsp;failed both filters</td>
+        <td style="text-align:right">{n_fail_both:,}</td></tr>
+    <tr><td>tx threshold (p{tx_pctile:g} of input)</td>
+        <td style="text-align:right">{tx_threshold:.2f}</td></tr>
+    <tr><td>area threshold (p{area_pctile:g} of input, ref={area_source})</td>
+        <td style="text-align:right">{area_threshold:.2f}</td></tr>
+    <tr><td>median de novo n_tx</td><td style="text-align:right">{tx_med:.1f}</td></tr>
+    <tr><td>median de novo area</td><td style="text-align:right">{area_med:.2f}</td></tr>
+  </tbody>
+</table>
+</div>
+"""
+    with open(output_path, "w") as f:
+        f.write(html)
+
+
 def _input_cell_areas(dataset: STDataset) -> tuple[np.ndarray, str]:
     """Return per-input-cell reference areas and the source label.
 
@@ -831,6 +908,7 @@ def create_anndata(
     denovo_min_tx_pctile: float = 25.0,
     denovo_min_area_pctile: float = 5.0,
     denovo_filter_report_fname: str | None = None,
+    denovo_filter_mqc_fname: str | None = None,
 ):
     """Create AnnData file from transcript assignment table.
 
@@ -859,11 +937,15 @@ def create_anndata(
             filter report (transcript count, convex-hull area, thresholds, and
             pass/fail flags). If None, derived as
             ``{output_fname stem}.denovo_filter_report.parquet``.
+        denovo_filter_mqc_fname: HTML path for a MultiQC-custom-content summary
+            of the filter outcome. If None, derived as
+            ``{output_fname stem}.denovo_filter_mqc.html``.
     """
+    stem = str(Path(output_fname).with_suffix(""))
     if denovo_filter_report_fname is None:
-        denovo_filter_report_fname = (
-            str(Path(output_fname).with_suffix("")) + ".denovo_filter_report.parquet"
-        )
+        denovo_filter_report_fname = stem + ".denovo_filter_report.parquet"
+    if denovo_filter_mqc_fname is None:
+        denovo_filter_mqc_fname = stem + ".denovo_filter_mqc.html"
     ## Get relevant spatial locations
     cell_id2x_centroid = dict(zip(dataset.nuc_cell_id, dataset.nuc_xy[:, 0]))
     cell_id2y_centroid = dict(zip(dataset.nuc_cell_id, dataset.nuc_xy[:, 1]))
@@ -1006,9 +1088,21 @@ def create_anndata(
 
     report.write_parquet(denovo_filter_report_fname)
     n_denovo_after = int(cluster_info.filter(denovo_mask).height)
+    _write_denovo_filter_mqc_html(
+        denovo_filter_mqc_fname,
+        sample_id=Path(output_fname).stem,
+        n_before=n_denovo_before,
+        n_after=n_denovo_after,
+        tx_threshold=tx_threshold,
+        area_threshold=area_threshold,
+        tx_pctile=denovo_min_tx_pctile,
+        area_pctile=denovo_min_area_pctile,
+        area_source=area_source,
+        report=report,
+    )
     logger.info(
         "De novo filter: %d → %d (tx_count >= %.1f [p%.0f],"
-        " area >= %.2f [p%.0f, ref=%s]); report written → %s (%d rows)",
+        " area >= %.2f [p%.0f, ref=%s]); parquet → %s (%d rows), mqc → %s",
         n_denovo_before,
         n_denovo_after,
         tx_threshold,
@@ -1018,6 +1112,7 @@ def create_anndata(
         area_source,
         denovo_filter_report_fname,
         report.height,
+        denovo_filter_mqc_fname,
     )
 
     # Assign unique cell identifiers
@@ -1147,6 +1242,7 @@ def post_process(
     denovo_min_tx_pctile: float = 25.0,
     denovo_min_area_pctile: float = 5.0,
     denovo_filter_report_fname: str | None = None,
+    denovo_filter_mqc_fname: str | None = None,
 ):
     timings: dict[str, float] = {}
 
@@ -1298,6 +1394,7 @@ def post_process(
             denovo_min_tx_pctile=denovo_min_tx_pctile,
             denovo_min_area_pctile=denovo_min_area_pctile,
             denovo_filter_report_fname=denovo_filter_report_fname,
+            denovo_filter_mqc_fname=denovo_filter_mqc_fname,
         )
         _log_step("Step 7", step_start, anndata_fname, timings)
 
