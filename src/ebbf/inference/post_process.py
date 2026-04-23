@@ -5,6 +5,7 @@ import os
 import shutil
 import time
 import uuid
+from pathlib import Path
 
 import anndata
 import numpy as np
@@ -14,7 +15,7 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 from scipy.sparse import coo_array, csr_matrix
 from scipy.sparse.csgraph import connected_components
-from scipy.spatial import KDTree
+from scipy.spatial import ConvexHull, KDTree
 from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 
@@ -627,6 +628,9 @@ def post_process_merge(
     original_tx_fname: str | None = None,
     noise_meta_fname: str | None = None,
     work_dir: str = ".",
+    denovo_min_tx_pctile: float = 25.0,
+    denovo_min_area_pctile: float = 5.0,
+    denovo_filter_report_fname: str | None = None,
 ):
     os.makedirs(work_dir, exist_ok=True)
     temp_path = os.path.join(work_dir, "temp-merge-" + uuid.uuid4().hex + ".parquet")
@@ -647,6 +651,9 @@ def post_process_merge(
             output_fname=anndata_fname,
             dataset=dataset,
             cd_cutoff=cd_cutoff,
+            denovo_min_tx_pctile=denovo_min_tx_pctile,
+            denovo_min_area_pctile=denovo_min_area_pctile,
+            denovo_filter_report_fname=denovo_filter_report_fname,
         )
 
     ## Re-attach noise probability columns and append noise rows to ef.parquet
@@ -795,11 +802,35 @@ def _create_anndata_from_lazyframe(
     return adata
 
 
+def _input_cell_areas(dataset: STDataset) -> tuple[np.ndarray, str]:
+    """Return per-input-cell reference areas and the source label.
+
+    Prefers cell-boundary polygon area (summed triangle areas from the stored
+    triangulation) when segmentation cell shapes are available, and falls back
+    to the nucleus ellipse area (π × |det(S)|) otherwise.
+    """
+    tri_num = np.asarray(dataset.cell_triangle_num)
+    tri_xy = np.asarray(dataset.cell_triangle_xy)
+    if tri_num.size > 0 and tri_xy.size > 0:
+        v = tri_xy.reshape(-1, 3, 2)
+        x1, x2, x3 = v[:, 0, 0], v[:, 1, 0], v[:, 2, 0]
+        y1, y2, y3 = v[:, 0, 1], v[:, 1, 1], v[:, 2, 1]
+        triangle_areas = 0.5 * np.abs(x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
+        cell_idx = np.repeat(np.arange(tri_num.shape[0]), tri_num)
+        areas = np.bincount(cell_idx, weights=triangle_areas, minlength=tri_num.shape[0])
+        return areas, "cell_polygon"
+    areas = np.pi * np.abs(np.linalg.det(np.asarray(dataset.nuc_ellipse_mat)))
+    return areas, "nucleus_ellipse"
+
+
 def create_anndata(
     ef_tx_fname: str,
     output_fname: str,
     dataset: STDataset,
     cd_cutoff: float = 2.0,
+    denovo_min_tx_pctile: float = 25.0,
+    denovo_min_area_pctile: float = 5.0,
+    denovo_filter_report_fname: str | None = None,
 ):
     """Create AnnData file from transcript assignment table.
 
@@ -808,12 +839,31 @@ def create_anndata(
     2. Split cells: mahalanobis_distance <= 1 and centroid_distance > cd_cutoff
     3. De novo cells: mahalanobis_distance > 1
 
+    De novo cells are further filtered against the input segmentation:
+    clusters with transcript count below the ``denovo_min_tx_pctile`` percentile
+    of input cell transcript counts, or with convex-hull area below the
+    ``denovo_min_area_pctile`` percentile of input cell-polygon areas (summed
+    triangulation areas; falls back to nucleus ellipse area if cell shapes are
+    unavailable), are dropped. Set either percentile to 0 to disable.
+
     Args:
         ef_tx_fname: Path to the transcript assignment parquet file
         output_fname: Path to output h5ad file
         dataset: STDataset with nucleus spatial data
         cd_cutoff: Centroid distance cutoff for cell classification
+        denovo_min_tx_pctile: Percentile of input cell transcript counts used
+            as the minimum-size threshold for de novo cells (default: 25.0).
+        denovo_min_area_pctile: Percentile of input nucleus ellipse areas used
+            as the minimum-area threshold for de novo cells (default: 5.0).
+        denovo_filter_report_fname: Parquet path for the per-de-novo-cluster
+            filter report (transcript count, convex-hull area, thresholds, and
+            pass/fail flags). If None, derived as
+            ``{output_fname stem}.denovo_filter_report.parquet``.
     """
+    if denovo_filter_report_fname is None:
+        denovo_filter_report_fname = (
+            str(Path(output_fname).with_suffix("")) + ".denovo_filter_report.parquet"
+        )
     ## Get relevant spatial locations
     cell_id2x_centroid = dict(zip(dataset.nuc_cell_id, dataset.nuc_xy[:, 0]))
     cell_id2y_centroid = dict(zip(dataset.nuc_cell_id, dataset.nuc_xy[:, 1]))
@@ -847,6 +897,127 @@ def create_anndata(
             .otherwise(pl.lit("original"))
             .alias("cell_type")
         ]
+    )
+
+    # Filter de novo clusters against input segmentation percentile thresholds.
+    # Tx-count threshold uses nuc_cell_counts; area threshold uses π × |det(S)|
+    # from the nucleus ellipse matrix. Zeros are dropped from the reference so
+    # empty segmentations don't collapse the percentile to 0. A per-cluster
+    # report is always written at denovo_filter_report_fname (empty if no
+    # de novo clusters exist) so downstream consumers can rely on its presence.
+    denovo_mask = pl.col("cell_type") == "denovo"
+    n_denovo_before = int(cluster_info.filter(denovo_mask).height)
+    filter_active = denovo_min_tx_pctile > 0 or denovo_min_area_pctile > 0
+
+    input_tx = np.asarray(dataset.nuc_cell_counts)
+    input_tx_nz = input_tx[input_tx > 0]
+    tx_threshold = (
+        float(np.percentile(input_tx_nz, denovo_min_tx_pctile))
+        if denovo_min_tx_pctile > 0 and input_tx_nz.size > 0
+        else 0.0
+    )
+
+    input_areas, area_source = _input_cell_areas(dataset)
+    input_areas_nz = input_areas[input_areas > 0]
+    area_threshold = (
+        float(np.percentile(input_areas_nz, denovo_min_area_pctile))
+        if denovo_min_area_pctile > 0 and input_areas_nz.size > 0
+        else 0.0
+    )
+
+    report_schema = {
+        "ef_cluster_id": cluster_info.schema["ef_cluster_id"],
+        "cell_id": cluster_info.schema["cell_id"],
+        "x": cluster_info.schema["x"],
+        "y": cluster_info.schema["y"],
+        "centroid_distance": cluster_info.schema["centroid_distance"],
+        "mahalanobis_distance": cluster_info.schema["mahalanobis_distance"],
+        "n_tx": pl.Int64,
+        "area": pl.Float64,
+        "tx_threshold": pl.Float64,
+        "area_threshold": pl.Float64,
+        "tx_pctile": pl.Float64,
+        "area_pctile": pl.Float64,
+        "area_reference_source": pl.Utf8,
+        "passes_tx_filter": pl.Boolean,
+        "passes_area_filter": pl.Boolean,
+        "kept": pl.Boolean,
+    }
+
+    if n_denovo_before > 0:
+        denovo_ids = cluster_info.filter(denovo_mask)["ef_cluster_id"].to_list()
+        denovo_tx = (
+            ldf.filter(pl.col("ef_cluster_id").is_in(denovo_ids))
+            .select(["ef_cluster_id", "x", "y"])
+            .collect()
+        )
+
+        n_tx_per_cluster: dict[int, int] = {}
+        area_per_cluster: dict[int, float] = {}
+        for key, group in denovo_tx.group_by("ef_cluster_id"):
+            cid = key[0] if isinstance(key, tuple) else key
+            xy = group.select(["x", "y"]).to_numpy()
+            n_tx_per_cluster[cid] = xy.shape[0]
+            if xy.shape[0] < 3:
+                area_per_cluster[cid] = 0.0
+            else:
+                try:
+                    area_per_cluster[cid] = float(ConvexHull(xy).volume)
+                except Exception:
+                    area_per_cluster[cid] = 0.0
+
+        stats_df = pl.DataFrame(
+            {
+                "ef_cluster_id": list(n_tx_per_cluster.keys()),
+                "_denovo_n_tx": list(n_tx_per_cluster.values()),
+                "_denovo_area": [area_per_cluster[c] for c in n_tx_per_cluster.keys()],
+            }
+        )
+        cluster_info = cluster_info.join(stats_df, on="ef_cluster_id", how="left")
+
+        pass_tx = pl.col("_denovo_n_tx").fill_null(0) >= tx_threshold
+        pass_area = pl.col("_denovo_area").fill_null(0.0) >= area_threshold
+
+        report = (
+            cluster_info.filter(denovo_mask)
+            .with_columns(
+                [
+                    pl.col("_denovo_n_tx").fill_null(0).cast(pl.Int64).alias("n_tx"),
+                    pl.col("_denovo_area").fill_null(0.0).cast(pl.Float64).alias("area"),
+                    pl.lit(tx_threshold).alias("tx_threshold"),
+                    pl.lit(area_threshold).alias("area_threshold"),
+                    pl.lit(denovo_min_tx_pctile).alias("tx_pctile"),
+                    pl.lit(denovo_min_area_pctile).alias("area_pctile"),
+                    pl.lit(area_source).alias("area_reference_source"),
+                    pass_tx.alias("passes_tx_filter"),
+                    pass_area.alias("passes_area_filter"),
+                    (pass_tx & pass_area).alias("kept"),
+                ]
+            )
+            .select(list(report_schema.keys()))
+        )
+
+        if filter_active:
+            keep_expr = (~denovo_mask) | (pass_tx & pass_area)
+            cluster_info = cluster_info.filter(keep_expr)
+        cluster_info = cluster_info.drop(["_denovo_n_tx", "_denovo_area"])
+    else:
+        report = pl.DataFrame(schema=report_schema)
+
+    report.write_parquet(denovo_filter_report_fname)
+    n_denovo_after = int(cluster_info.filter(denovo_mask).height)
+    logger.info(
+        "De novo filter: %d → %d (tx_count >= %.1f [p%.0f],"
+        " area >= %.2f [p%.0f, ref=%s]); report written → %s (%d rows)",
+        n_denovo_before,
+        n_denovo_after,
+        tx_threshold,
+        denovo_min_tx_pctile,
+        area_threshold,
+        denovo_min_area_pctile,
+        area_source,
+        denovo_filter_report_fname,
+        report.height,
     )
 
     # Assign unique cell identifiers
@@ -973,6 +1144,9 @@ def post_process(
     original_tx_fname: str | None = None,
     work_dir: str = ".",
     n_workers: int | None = None,
+    denovo_min_tx_pctile: float = 25.0,
+    denovo_min_area_pctile: float = 5.0,
+    denovo_filter_report_fname: str | None = None,
 ):
     timings: dict[str, float] = {}
 
@@ -1121,6 +1295,9 @@ def post_process(
             output_fname=anndata_fname,
             dataset=dataset,
             cd_cutoff=cd_cutoff,
+            denovo_min_tx_pctile=denovo_min_tx_pctile,
+            denovo_min_area_pctile=denovo_min_area_pctile,
+            denovo_filter_report_fname=denovo_filter_report_fname,
         )
         _log_step("Step 7", step_start, anndata_fname, timings)
 

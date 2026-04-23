@@ -73,13 +73,14 @@ process EBBF_POSTPROCESS_MERGE {
     tuple val(meta), path(mapped_parts), path(dataset_file), path(original_transcripts), path(zarr_dir), path(noise_meta)
 
     output:
-    tuple val(meta), path("*.parquet"), emit: results
-    tuple val(meta), path("*.h5ad"), emit: anndata
+    tuple val(meta), path("${prefix}.parquet"), emit: results
+    tuple val(meta), path("${prefix}.h5ad"), emit: anndata
+    tuple val(meta), path("${prefix}.denovo_filter_report.parquet"), emit: denovo_filter_report
     path "versions.yml", emit: versions
 
     script:
     def args = task.ext.args ?: ''
-    def prefix = task.ext.prefix ?: "${meta.id}"
+    prefix = task.ext.prefix ?: "${meta.id}"
     def cd_cutoff = params.cd_cutoff ?: 2.0
     def orig_tx_arg = "--original_transcripts ${original_transcripts}"
     def noise_meta_arg = "--noise_meta ${noise_meta}"
@@ -90,6 +91,7 @@ process EBBF_POSTPROCESS_MERGE {
         --dataset ${dataset_file} \\
         --output ${prefix}.parquet \\
         --anndata_output ${prefix}.h5ad \\
+        --denovo_filter_report ${prefix}.denovo_filter_report.parquet \\
         --cd_cutoff ${cd_cutoff} \\
         --work_dir . \\
         ${orig_tx_arg} \\
