@@ -25,6 +25,47 @@ def _add_common_args(parser: argparse.ArgumentParser):
     )
 
 
+def _add_denovo_filter_args(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--denovo_min_tx_pctile",
+        type=float,
+        default=25.0,
+        help=(
+            "Drop de novo cells with transcript counts below this percentile of"
+            " input cell transcript counts (default: 25.0; set 0 to disable)"
+        ),
+    )
+    parser.add_argument(
+        "--denovo_min_area_pctile",
+        type=float,
+        default=5.0,
+        help=(
+            "Drop de novo cells with convex-hull area below this percentile of"
+            " input nucleus ellipse areas (default: 5.0; set 0 to disable)"
+        ),
+    )
+    parser.add_argument(
+        "--denovo_filter_report",
+        type=str,
+        default=None,
+        help=(
+            "Path to write a per-de-novo-cluster filter report parquet"
+            " (columns: ef_cluster_id, n_tx, area, thresholds, pass flags, kept)."
+            " Defaults to '<anndata_output stem>.denovo_filter_report.parquet'."
+        ),
+    )
+    parser.add_argument(
+        "--denovo_filter_mqc",
+        type=str,
+        default=None,
+        help=(
+            "Path to write a MultiQC custom-content HTML summary of the"
+            " de novo filter. Defaults to"
+            " '<anndata_output stem>.denovo_filter_mqc.html'."
+        ),
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Post-process EBB&Flow inference results")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -65,6 +106,7 @@ def main():
         default=None,
         help="Number of CPU workers for post-processing (default: auto)",
     )
+    _add_denovo_filter_args(parser_full)
 
     # prepare
     parser_prepare = subparsers.add_parser("prepare", help="Run post-process prepare stage")
@@ -143,6 +185,7 @@ def main():
             " (re-attaches noise columns and appends noise rows)"
         ),
     )
+    _add_denovo_filter_args(parser_merge)
 
     args = parser.parse_args()
 
@@ -159,6 +202,10 @@ def main():
             cd_cutoff=args.cd_cutoff,
             original_tx_fname=args.original_transcripts,
             n_workers=args.n_workers,
+            denovo_min_tx_pctile=args.denovo_min_tx_pctile,
+            denovo_min_area_pctile=args.denovo_min_area_pctile,
+            denovo_filter_report_fname=args.denovo_filter_report,
+            denovo_filter_mqc_fname=args.denovo_filter_mqc,
         )
     elif args.command == "prepare":
         post_process_prepare(
@@ -191,4 +238,8 @@ def main():
             original_tx_fname=args.original_transcripts,
             noise_meta_fname=args.noise_meta,
             work_dir=args.work_dir,
+            denovo_min_tx_pctile=args.denovo_min_tx_pctile,
+            denovo_min_area_pctile=args.denovo_min_area_pctile,
+            denovo_filter_report_fname=args.denovo_filter_report,
+            denovo_filter_mqc_fname=args.denovo_filter_mqc,
         )

@@ -223,6 +223,8 @@ workflow EBBF {
 
     ch_multiqc_files = ch_multiqc_files.mix(ch_collated_versions)
     ch_multiqc_files = ch_multiqc_files.mix(
+        EBBF_POSTPROCESS_MERGE.out.denovo_filter_mqc.map { _meta, report -> report })
+    ch_multiqc_files = ch_multiqc_files.mix(
         ch_methods_description.collectFile(
             name: 'methods_description_mqc.yaml',
             sort: true
