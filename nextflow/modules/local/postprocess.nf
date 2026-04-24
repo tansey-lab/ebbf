@@ -15,6 +15,7 @@ process EBBF_POSTPROCESS_PREPARE {
     def prefix = task.ext.prefix ?: "${meta.id}"
     def n_workers_arg = params.n_postprocess_workers ? "--n_workers ${params.n_postprocess_workers}" : ""
     """
+    export MALLOC_ARENA_MAX=2
     ebbf-postprocess \\
         prepare \\
         ${parquet_files} \\
