@@ -103,11 +103,11 @@ def _dbscan_worker(in_q, out_q, epsilon: float, output_path: str):
 def filter_unique_and_remap_tx(input_path: str | list[str], output_path: str, idx2genes: dict):
     logger.info("filter_unique_and_remap_tx: deduplicating transcripts and remapping gene indices")
 
-    df = pl.scan_parquet(input_path)
-
-    ## Get unique values
-    min_vals = df.group_by("tx_idx").agg(pl.min("tx_dist"))
-    df = df.join(min_vals, how="inner", on=["tx_idx", "tx_dist"])
+    df = (
+        pl.scan_parquet(input_path)
+        .filter(pl.col("tx_dist") == pl.col("tx_dist").min().over("tx_idx"))
+        .unique(subset="tx_idx", keep="first")
+    )
 
     ## Rename to be consistent with everything else
     df = df.rename(
