@@ -135,25 +135,36 @@ def build_ebbf_boundaries(
     Returns:
         GeoDataFrame with EBBF cell polygons
     """
+    import polars as pl
+
     logger.info("Loading EBBF transcripts for boundary visualization...")
-    tx = pd.read_parquet(ef_tx_fname, columns=["transcript_id", "ef_cluster_id"])
+    ef_lf = (
+        pl.scan_parquet(ef_tx_fname)
+        .select(["transcript_id", "ef_cluster_id"])
+        .filter(pl.col("ef_cluster_id").is_not_null())
+    )
 
     logger.info("Joining to original transcript positions...")
-    # Try to read with x, y columns (preprocessed format)
-    # Fall back to x_location, y_location (raw Xenium format)
-    tx_orig = pd.read_parquet(original_tx_fname)
-    if "x" in tx_orig.columns and "y" in tx_orig.columns:
-        tx_orig = tx_orig[["transcript_id", "x", "y"]]
-        tx_orig = tx_orig.rename(columns={"x": "x_location", "y": "y_location"})
-    elif "x_location" in tx_orig.columns and "y_location" in tx_orig.columns:
-        tx_orig = tx_orig[["transcript_id", "x_location", "y_location"]]
+    orig_cols = pl.scan_parquet(original_tx_fname).collect_schema().names()
+    if "x" in orig_cols and "y" in orig_cols:
+        orig_lf = pl.scan_parquet(original_tx_fname).select(
+            [
+                pl.col("transcript_id"),
+                pl.col("x").alias("x_location"),
+                pl.col("y").alias("y_location"),
+            ]
+        )
+    elif "x_location" in orig_cols and "y_location" in orig_cols:
+        orig_lf = pl.scan_parquet(original_tx_fname).select(
+            ["transcript_id", "x_location", "y_location"]
+        )
     else:
         raise ValueError(
             f"Could not find coordinate columns in {original_tx_fname}. "
             "Expected 'x', 'y' or 'x_location', 'y_location'."
         )
-    tx = tx.merge(tx_orig, on="transcript_id", how="left")
-    del tx_orig
+
+    tx = ef_lf.join(orig_lf, on="transcript_id", how="left").collect(engine="streaming").to_pandas()
 
     logger.info(
         "Computing smooth density boundaries for %d clusters...",
