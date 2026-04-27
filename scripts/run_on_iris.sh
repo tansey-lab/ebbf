@@ -7,7 +7,7 @@ usage() {
     echo "Arguments:"
     echo "  input_zarr_dir   Path to SpatialData zarr directory"
     echo "  output_dir       Path to output directory"
-    echo "  conda_env_path   Path to conda environment (default: /home/quinnj2/.conda/ebbf)"
+    echo "  conda_env_path   Path to conda environment (default: /home/quinnj2/ebbf)"
     exit 1
 }
 
@@ -17,7 +17,7 @@ fi
 
 INPUT_DIR="$1"
 OUTPUT_DIR="$2"
-CONDA_ENV="${3:-/home/quinnj2/.conda/ebbf}"
+CONDA_ENV="${3:-/home/quinnj2/ebbf}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PIPELINE_DIR="$(dirname "$SCRIPT_DIR")/nextflow"
