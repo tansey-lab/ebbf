@@ -36,6 +36,7 @@ model:
   channel_mult_emb: ${params.channel_mult_emb}
   channels_per_head: ${params.channels_per_head}
   nuc_channel_frac: ${params.nuc_channel_frac}
+  pred_noise: ${params.pred_noise}
   splat: true
 
 train:
