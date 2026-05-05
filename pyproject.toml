@@ -67,6 +67,7 @@ ebbf-preprocess = "ebbf.cli.preprocess:main"
 ebbf-train = "ebbf.cli.train:main"
 ebbf-infer = "ebbf.cli.infer:main"
 ebbf-postprocess = "ebbf.cli.post_process:main"
+ebbf-build-boundaries = "ebbf.cli.build_boundaries:main"
 ebbf-reporting = "ebbf.cli.reporting:main"
 
 [tool.setuptools.packages.find]

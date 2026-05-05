@@ -3,18 +3,16 @@ process EBBF_REPORTING {
     label 'process_medium'
 
     input:
-    tuple val(meta), path(anndata_file), path(ef_parquet), path(original_transcripts), path(zarr_dir)
+    tuple val(meta), path(anndata_file), path(combined_boundaries), path(zarr_dir)
 
     output:
-    tuple val(meta), path("reports/*.html")           , emit: reports
-    tuple val(meta), path("reports/*.h5ad")            , emit: diff_anndata, optional: true
-    tuple val(meta), path("reports/*.pdf")             , emit: visualizations, optional: true
-    tuple val(meta), path("reports/*.parquet")         , emit: boundaries, optional: true
-    path "versions.yml"                                , emit: versions
+    tuple val(meta), path("reports/*.html") , emit: reports
+    tuple val(meta), path("reports/*.h5ad") , emit: diff_anndata, optional: true
+    tuple val(meta), path("reports/*.pdf")  , emit: visualizations, optional: true
+    path "versions.yml"                     , emit: versions
 
     script:
     def args = task.ext.args ?: ''
-    def viz_args = "--ef_tx ${ef_parquet} --original_transcripts ${original_transcripts} --viz_patch_size ${params.viz_patch_size}"
     """
     mkdir -p reports
 
@@ -22,7 +20,8 @@ process EBBF_REPORTING {
         ${anndata_file} \\
         --xenium_dir ${zarr_dir} \\
         --output_dir reports \\
-        ${viz_args} \\
+        --combined_boundaries ${combined_boundaries} \\
+        --viz_patch_size ${params.viz_patch_size} \\
         ${args}
 
     cat <<-END_VERSIONS > versions.yml
