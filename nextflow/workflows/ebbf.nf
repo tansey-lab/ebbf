@@ -9,6 +9,7 @@ include { EBBF_INFER                } from '../modules/local/infer'
 include { EBBF_POSTPROCESS_PREPARE  } from '../modules/local/postprocess'
 include { EBBF_POSTPROCESS_MAP      } from '../modules/local/postprocess'
 include { EBBF_POSTPROCESS_MERGE    } from '../modules/local/postprocess'
+include { EBBF_BOUNDARIES           } from '../modules/local/boundaries'
 include { EBBF_REPORTING            } from '../modules/local/reporting'
 include { MULTIQC                   } from '../modules/nf-core/multiqc/main'
 include { paramsSummaryMap          } from 'plugin/nf-schema'
@@ -155,13 +156,22 @@ workflow EBBF {
     ch_versions = ch_versions.mix(EBBF_POSTPROCESS_MERGE.out.versions.first())
 
     //
-    // STEP 5: Reporting - Generate HTML comparison reports
+    // STEP 5a: Build first-class cell_boundaries_combined.parquet output
+    //
+    ch_boundaries_input = EBBF_POSTPROCESS_MERGE.out.results
+        .join(ch_transcripts)
+        .join(ch_samplesheet)
+
+    EBBF_BOUNDARIES(ch_boundaries_input)
+    ch_versions = ch_versions.mix(EBBF_BOUNDARIES.out.versions.first())
+
+    //
+    // STEP 5b: Reporting - HTML/PDF analysis & plots from h5ad + combined boundaries
     // Can be disabled with --reporting false to save compute time
     //
     if (params.reporting) {
         ch_reporting_input = EBBF_POSTPROCESS_MERGE.out.anndata
-            .join(EBBF_POSTPROCESS_MERGE.out.results)
-            .join(ch_transcripts)
+            .join(EBBF_BOUNDARIES.out.boundaries)
             .join(ch_samplesheet)
 
         EBBF_REPORTING(ch_reporting_input)

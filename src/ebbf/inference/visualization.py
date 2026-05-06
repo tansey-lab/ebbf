@@ -354,11 +354,41 @@ def _render_patch(
     logger.info("  Saved %s", output_path)
 
 
-def visualize_boundaries(
+MAX_PATCHES = 10
+
+
+def build_combined_boundaries(
     ef_tx_fname: str,
     original_tx_fname: str,
-    output_dir: str,
     xenium_dir: str | None = None,
+) -> gpd.GeoDataFrame:
+    """
+    Build a combined GeoDataFrame of EBBF + default Xenium cell boundaries.
+
+    The `segmentation` column distinguishes rows ("EBBF" vs "Default").
+    """
+    gdf_ebbf = build_ebbf_boundaries(ef_tx_fname, original_tx_fname)
+    gdf_default = (
+        load_default_boundaries(xenium_dir) if xenium_dir is not None else gpd.GeoDataFrame()
+    )
+
+    if len(gdf_default) > 0 and len(gdf_ebbf) > 0:
+        gdf_combined = pd.concat([gdf_default, gdf_ebbf], ignore_index=True)
+    elif len(gdf_ebbf) > 0:
+        gdf_combined = gdf_ebbf
+    elif len(gdf_default) > 0:
+        gdf_combined = gdf_default
+    else:
+        return gpd.GeoDataFrame()
+    return gpd.GeoDataFrame(gdf_combined, geometry="geometry")
+
+
+def visualize_boundaries(
+    output_dir: str,
+    ef_tx_fname: str | None = None,
+    original_tx_fname: str | None = None,
+    xenium_dir: str | None = None,
+    combined_boundaries: gpd.GeoDataFrame | str | None = None,
     patch_size: float = 500.0,
     dpi: int = 150,
 ):
@@ -366,73 +396,72 @@ def visualize_boundaries(
     Create boundary comparison visualizations.
 
     Generates separate PDF files for:
-    - Full tissue overview (tiled into patches)
+    - Full tissue overview: up to MAX_PATCHES randomly-sampled populated tiles
     - Zoomed regions at the center
 
-    Args:
-        ef_tx_fname: Path to the EBBF transcript assignment parquet file
-        original_tx_fname: Path to original transcripts parquet file
-        output_dir: Directory to save output PDF files
-        xenium_dir: Path to Xenium output directory for default boundaries
-        patch_size: Size of each visualization patch in microns
-        dpi: Output DPI
+    Either pass a pre-built `combined_boundaries` (GeoDataFrame or path to a
+    cell_boundaries_combined.parquet), or pass the raw inputs to build one.
     """
     os.makedirs(output_dir, exist_ok=True)
     output_prefix = os.path.join(output_dir, "boundaries")
 
-    # Build EBBF boundaries
-    gdf_ebbf = build_ebbf_boundaries(ef_tx_fname, original_tx_fname)
-
-    # Load default boundaries if available
-    if xenium_dir is not None:
-        gdf_default = load_default_boundaries(xenium_dir)
+    if combined_boundaries is None:
+        if ef_tx_fname is None or original_tx_fname is None:
+            raise ValueError(
+                "visualize_boundaries needs either combined_boundaries or "
+                "(ef_tx_fname, original_tx_fname)"
+            )
+        gdf_combined = build_combined_boundaries(ef_tx_fname, original_tx_fname, xenium_dir)
+    elif isinstance(combined_boundaries, str):
+        gdf_combined = gpd.read_parquet(combined_boundaries)
     else:
-        gdf_default = gpd.GeoDataFrame()
+        gdf_combined = combined_boundaries
 
-    # Compute total bounds
-    if len(gdf_default) > 0 and len(gdf_ebbf) > 0:
-        gdf_combined = pd.concat([gdf_default, gdf_ebbf], ignore_index=True)
-        gdf_combined = gpd.GeoDataFrame(gdf_combined, geometry="geometry")
-        xmin, ymin, xmax, ymax = gdf_combined.total_bounds
-    elif len(gdf_ebbf) > 0:
-        xmin, ymin, xmax, ymax = gdf_ebbf.total_bounds
-    else:
+    if len(gdf_combined) == 0:
         logger.warning("No boundaries to visualize")
         return
 
+    if "segmentation" in gdf_combined.columns:
+        gdf_default = gdf_combined[gdf_combined["segmentation"] == "Default"]
+        gdf_ebbf = gdf_combined[gdf_combined["segmentation"] == "EBBF"]
+    else:
+        gdf_default = gpd.GeoDataFrame()
+        gdf_ebbf = gdf_combined
+
+    xmin, ymin, xmax, ymax = gdf_combined.total_bounds
     logger.info("Rendering boundary comparison visualizations...")
     logger.info("  Total bounds: (%.1f, %.1f) to (%.1f, %.1f)", xmin, ymin, xmax, ymax)
 
-    # Save combined GeoParquet
-    if len(gdf_default) > 0:
-        gdf_combined = pd.concat([gdf_default, gdf_ebbf], ignore_index=True)
-        gdf_combined = gpd.GeoDataFrame(gdf_combined, geometry="geometry")
-        geoparquet_path = os.path.join(output_dir, "cell_boundaries_combined.parquet")
-        gdf_combined.to_parquet(geoparquet_path)
-        logger.info("  Saved %s", geoparquet_path)
-
-    # Render full tissue as patches
-    logger.info("Rendering full tissue patches...")
+    # Render up to MAX_PATCHES randomly-sampled populated patches across the tissue
+    logger.info("Rendering up to %d sampled tissue patches...", MAX_PATCHES)
     n_patches_x = int(np.ceil((xmax - xmin) / patch_size))
     n_patches_y = int(np.ceil((ymax - ymin) / patch_size))
 
-    patch_idx = 0
-    for i in range(n_patches_x):
-        for j in range(n_patches_y):
-            px_min = xmin + i * patch_size
-            py_min = ymin + j * patch_size
-            px_max = min(px_min + patch_size, xmax)
-            py_max = min(py_min + patch_size, ymax)
+    grid = [(i, j) for i in range(n_patches_x) for j in range(n_patches_y)]
+    rng = np.random.default_rng(0)
+    rng.shuffle(grid)
 
-            _render_patch(
-                gdf_default,
-                gdf_ebbf,
-                (px_min, py_min, px_max, py_max),
-                output_prefix,
-                patch_idx,
-                dpi=dpi,
-            )
-            patch_idx += 1
+    sindex_ebbf = gdf_ebbf.sindex if len(gdf_ebbf) > 0 else None
+    sindex_default = gdf_default.sindex if len(gdf_default) > 0 else None
+
+    rendered = 0
+    for i, j in grid:
+        if rendered >= MAX_PATCHES:
+            break
+        px_min = xmin + i * patch_size
+        py_min = ymin + j * patch_size
+        px_max = min(px_min + patch_size, xmax)
+        py_max = min(py_min + patch_size, ymax)
+        bbox = (px_min, py_min, px_max, py_max)
+
+        has_content = (
+            sindex_ebbf is not None and len(list(sindex_ebbf.intersection(bbox))) > 0
+        ) or (sindex_default is not None and len(list(sindex_default.intersection(bbox))) > 0)
+        if not has_content:
+            continue
+
+        _render_patch(gdf_default, gdf_ebbf, bbox, output_prefix, rendered, dpi=dpi)
+        rendered += 1
 
     # Render zoomed center regions
     logger.info("Rendering zoomed center regions...")

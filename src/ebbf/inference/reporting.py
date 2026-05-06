@@ -69,6 +69,14 @@ def _compute_diff_adata(adata_ebbf, adata_default):
     shared_ids = sorted(set(adata_default.obs_names) & set(ebbf_orig.obs_names))
     genes = sorted(set(adata_default.var_names) & set(ebbf_orig.var_names))
 
+    # Subsample large cohorts: PCA/UMAP/Leiden on a dense (cells × genes) diff matrix
+    # blows up memory past ~100k cells.
+    max_cells = 100_000
+    if len(shared_ids) > max_cells:
+        rng = np.random.default_rng(0)
+        shared_ids = sorted(rng.choice(shared_ids, size=max_cells, replace=False).tolist())
+        logger.info(f"Subsampled to {max_cells:,} cells for diff analysis")
+
     ad_d = adata_default[shared_ids, genes]
     ad_e = ebbf_orig[shared_ids, genes]
     logger.info(f"Diff analysis: {len(shared_ids):,} shared cells, {len(genes)} genes")
@@ -164,6 +172,13 @@ def generate_distribution_report(adata_ebbf, adata_default, output_dir):
     e_counts, e_genes = get_stats(adata_ebbf_filt)
     dn_counts, dn_genes = get_stats(adata_denovo)
 
+    def _safe_pct(arrs, q, default=1.0):
+        cat = np.concatenate([np.asarray(a) for a in arrs if len(a) > 0]) if arrs else np.array([])
+        return float(np.percentile(cat, q)) if len(cat) > 0 else default
+
+    def _fmt(x, spec):
+        return f"{x:{spec}}" if np.isfinite(x) else "—"
+
     images = {}
 
     # 1. Total counts distributions
@@ -188,15 +203,20 @@ def generate_distribution_report(adata_ebbf, adata_default, output_dir):
     axes[0, 0].set_ylabel("Density")
     axes[0, 0].set_title("Total Transcript Distribution")
     axes[0, 0].legend()
-    axes[0, 0].set_xlim(0, np.percentile(np.concatenate([d_counts, e_counts]), 99))
+    xlim_99 = _safe_pct([d_counts, e_counts], 99)
+    if xlim_99 > 0:
+        axes[0, 0].set_xlim(0, xlim_99)
 
-    axes[0, 1].ecdf(d_counts, label="Default", color="#1f77b4")
-    axes[0, 1].ecdf(e_counts, label="EBBF", color="#ff7f0e")
+    if len(d_counts) > 0:
+        axes[0, 1].ecdf(d_counts, label="Default", color="#1f77b4")
+    if len(e_counts) > 0:
+        axes[0, 1].ecdf(e_counts, label="EBBF", color="#ff7f0e")
     axes[0, 1].set_xlabel("Total Transcripts per Cell")
     axes[0, 1].set_ylabel("Cumulative Fraction")
     axes[0, 1].set_title("CDF of Total Transcripts")
     axes[0, 1].legend()
-    axes[0, 1].set_xlim(0, np.percentile(np.concatenate([d_counts, e_counts]), 99))
+    if xlim_99 > 0:
+        axes[0, 1].set_xlim(0, xlim_99)
 
     axes[1, 0].hist(d_genes, bins=80, alpha=0.5, density=True, color="#1f77b4", label="Default")
     axes[1, 0].hist(e_genes, bins=80, alpha=0.5, density=True, color="#ff7f0e", label="EBBF")
@@ -230,21 +250,27 @@ def generate_distribution_report(adata_ebbf, adata_default, output_dir):
     axes[0].set_xlabel("Total Transcripts per Cell")
     axes[0].set_ylabel("Count")
     axes[0].set_title(f"De Novo Cells — Transcript Distribution (n={len(dn_counts):,})")
-    axes[0].set_xlim(0, min(np.percentile(dn_counts, 99), 100))
+    if len(dn_counts) > 0:
+        axes[0].set_xlim(0, min(np.percentile(dn_counts, 99), 100))
 
     axes[1].hist(dn_genes, bins=60, color="#d62728", alpha=0.7, edgecolor="none")
     axes[1].set_xlabel("Genes Detected per Cell")
     axes[1].set_ylabel("Count")
     axes[1].set_title("De Novo Cells — Genes per Cell")
 
-    axes[2].ecdf(d_counts, label="Default", color="#1f77b4")
-    axes[2].ecdf(e_counts, label="EBBF", color="#ff7f0e")
-    axes[2].ecdf(dn_counts, label="De novo", color="#d62728")
+    if len(d_counts) > 0:
+        axes[2].ecdf(d_counts, label="Default", color="#1f77b4")
+    if len(e_counts) > 0:
+        axes[2].ecdf(e_counts, label="EBBF", color="#ff7f0e")
+    if len(dn_counts) > 0:
+        axes[2].ecdf(dn_counts, label="De novo", color="#d62728")
     axes[2].set_xlabel("Total Transcripts per Cell")
     axes[2].set_ylabel("Cumulative Fraction")
     axes[2].set_title("CDF — All Three Populations")
     axes[2].legend()
-    axes[2].set_xlim(0, np.percentile(np.concatenate([d_counts, e_counts]), 95))
+    xlim_95 = _safe_pct([d_counts, e_counts], 95)
+    if xlim_95 > 0:
+        axes[2].set_xlim(0, xlim_95)
     plt.tight_layout()
     images["dist_denovo"] = _fig_to_base64(fig)
 
@@ -254,9 +280,9 @@ def generate_distribution_report(adata_ebbf, adata_default, output_dir):
     e_gene_totals = np.array(adata_ebbf_filt[:, shared_genes].X.sum(axis=0)).flatten()
     dn_gene_totals = np.array(adata_denovo[:, shared_genes].X.sum(axis=0)).flatten()
 
-    d_gene_mean = d_gene_totals / adata_default.n_obs
-    e_gene_mean = e_gene_totals / adata_ebbf_filt.n_obs
-    dn_gene_mean = dn_gene_totals / adata_denovo.n_obs
+    d_gene_mean = d_gene_totals / max(adata_default.n_obs, 1)
+    e_gene_mean = e_gene_totals / max(adata_ebbf_filt.n_obs, 1)
+    dn_gene_mean = dn_gene_totals / max(adata_denovo.n_obs, 1)
 
     gene_df = pd.DataFrame(
         {
@@ -274,12 +300,11 @@ def generate_distribution_report(adata_ebbf, adata_default, output_dir):
         }
     )
 
-    d_detect = (
-        np.array((adata_default[:, shared_genes].X > 0).sum(axis=0)).flatten() / adata_default.n_obs
+    d_detect = np.array((adata_default[:, shared_genes].X > 0).sum(axis=0)).flatten() / max(
+        adata_default.n_obs, 1
     )
-    e_detect = (
-        np.array((adata_ebbf_filt[:, shared_genes].X > 0).sum(axis=0)).flatten()
-        / adata_ebbf_filt.n_obs
+    e_detect = np.array((adata_ebbf_filt[:, shared_genes].X > 0).sum(axis=0)).flatten() / max(
+        adata_ebbf_filt.n_obs, 1
     )
     gene_df["default_detect"] = d_detect
     gene_df["ebbf_detect"] = e_detect
@@ -303,8 +328,9 @@ def generate_distribution_report(adata_ebbf, adata_default, output_dir):
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
+    max_abs_diff = float(top_changed["diff_total"].abs().max()) if len(top_changed) else 0.0
     for i, (_, row) in enumerate(top_changed.iterrows()):
-        offset = top_changed["diff_total"].abs().max() * 0.02
+        offset = (max_abs_diff or 1.0) * 0.02
         xpos = row["diff_total"] + (offset if row["diff_total"] >= 0 else -offset)
         ha = "left" if row["diff_total"] >= 0 else "right"
         ax.text(
@@ -329,7 +355,11 @@ def generate_distribution_report(adata_ebbf, adata_default, output_dir):
         c="#2c3e50",
         edgecolors="none",
     )
-    lim = max(gene_df["default_mean"].max(), gene_df["ebbf_mean"].max()) * 1.1
+    if len(gene_df) > 0:
+        lim = max(float(gene_df["default_mean"].max()), float(gene_df["ebbf_mean"].max())) * 1.1
+        lim = lim if lim > 0 else 1.0
+    else:
+        lim = 1.0
     ax.plot([0, lim], [0, lim], "k--", alpha=0.3, linewidth=1)
     ax.set_xlabel("Default — Mean Transcripts/Cell")
     ax.set_ylabel("EBBF — Mean Transcripts/Cell")
@@ -440,10 +470,12 @@ def generate_distribution_report(adata_ebbf, adata_default, output_dir):
     ax.set_xlabel("Total Transcripts in De Novo Cells")
     ax.set_title(f"Top 40 Genes in De Novo Cells (n={adata_denovo.n_obs:,})")
     ax.invert_yaxis()
+    dn_total_sum = float(dn_gene_totals.sum()) if dn_gene_totals.size else 0.0
+    dn_total_max = float(dn_gene_totals.max()) if dn_gene_totals.size else 0.0
     for i, (_, row) in enumerate(top_dn.iterrows()):
-        pct = row["denovo_total"] / dn_gene_totals.sum() * 100
+        pct = (row["denovo_total"] / dn_total_sum * 100) if dn_total_sum > 0 else 0.0
         ax.text(
-            row["denovo_total"] + dn_gene_totals.max() * 0.01,
+            row["denovo_total"] + dn_total_max * 0.01,
             i,
             f"{pct:.1f}%",
             fontsize=7,
@@ -459,8 +491,8 @@ def generate_distribution_report(adata_ebbf, adata_default, output_dir):
         ("EBBF (orig+split)", e_counts, e_genes, adata_ebbf_filt.n_obs),
         ("EBBF (de novo)", dn_counts, dn_genes, adata_denovo.n_obs),
     ]:
-        stats_rows.append(
-            {
+        if len(counts) > 0:
+            row = {
                 "Dataset": label,
                 "Cells": f"{n:,}",
                 "Total Tx": f"{counts.sum():,.0f}",
@@ -472,7 +504,25 @@ def generate_distribution_report(adata_ebbf, adata_default, output_dir):
                 "Mean genes/cell": f"{genes_det.mean():.1f}",
                 "Median genes/cell": f"{np.median(genes_det):.0f}",
             }
-        )
+        else:
+            row = dict.fromkeys(
+                [
+                    "Dataset",
+                    "Cells",
+                    "Total Tx",
+                    "Mean Tx/cell",
+                    "Median Tx/cell",
+                    "Std Tx/cell",
+                    "Min",
+                    "Max",
+                    "Mean genes/cell",
+                    "Median genes/cell",
+                ],
+                "—",
+            )
+            row["Dataset"] = label
+            row["Cells"] = f"{n:,}"
+        stats_rows.append(row)
 
     gene_table = gene_df.sort_values("diff_total", ascending=False).copy()
     gene_table = gene_table[
@@ -598,8 +648,8 @@ De novo cells ({adata_denovo.n_obs:,}) shown separately.</p>
 <div class="section">
 <h2>De Novo Cell Distributions</h2>
 <p>Distribution of transcripts in the {adata_denovo.n_obs:,} de novo cells created by EBBF resegmentation.
-These cells have substantially fewer transcripts (median {np.median(dn_counts):.0f}) compared to
-original cells (Default median {np.median(d_counts):.0f}, EBBF median {np.median(e_counts):.0f}).</p>
+These cells have substantially fewer transcripts (median {np.median(dn_counts) if len(dn_counts) else 0:.0f}) compared to
+original cells (Default median {np.median(d_counts) if len(d_counts) else 0:.0f}, EBBF median {np.median(e_counts) if len(e_counts) else 0:.0f}).</p>
 <img src="data:image/png;base64,{images["dist_denovo"]}">
 </div>
 
@@ -1586,7 +1636,10 @@ def generate_morphology_report(adata_ebbf, adata_default, xenium_dir, output_dir
                 xlim = (0.0, 1.0)
                 bins = np.linspace(0, 1, BINS + 1)
             else:
-                upper = np.percentile(np.concatenate([b, a]), 99)
+                cat = np.concatenate([b, a]) if (len(b) or len(a)) else np.array([])
+                upper = float(np.percentile(cat, 99)) if len(cat) > 0 else 1.0
+                if upper <= 0:
+                    upper = 1.0
                 xlim = (0.0, upper)
                 bins = np.linspace(0, upper, BINS + 1)
 
@@ -1779,6 +1832,7 @@ def reporting(
     output_dir: str = ".",
     ef_tx_fname: str | None = None,
     original_tx_fname: str | None = None,
+    combined_boundaries_fname: str | None = None,
     viz_patch_size: float = 500.0,
 ):
     """
@@ -1808,7 +1862,14 @@ def reporting(
     adata_default = sd.tables["table"].copy()
 
     # Step 1: Boundary visualizations
-    if ef_tx_fname is not None and original_tx_fname is not None:
+    if combined_boundaries_fname is not None:
+        logger.info("Step 1: generating boundary visualizations from prebuilt parquet...")
+        visualize_boundaries(
+            output_dir=output_dir,
+            combined_boundaries=combined_boundaries_fname,
+            patch_size=viz_patch_size,
+        )
+    elif ef_tx_fname is not None and original_tx_fname is not None:
         logger.info("Step 1: generating boundary visualizations...")
         visualize_boundaries(
             ef_tx_fname=ef_tx_fname,
@@ -1819,7 +1880,8 @@ def reporting(
         )
     else:
         logger.info(
-            "Step 1: skipping boundary visualization (requires --ef_tx and --original_transcripts)"
+            "Step 1: skipping boundary visualization (requires --combined_boundaries or "
+            "--ef_tx and --original_transcripts)"
         )
 
     # Step 2: Distribution report
