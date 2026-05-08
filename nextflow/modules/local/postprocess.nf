@@ -1,6 +1,6 @@
 process EBBF_POSTPROCESS_PREPARE {
     tag "$meta.id"
-    label 'process_medium'
+    label 'process_high'
 
     input:
     tuple val(meta), path(parquet_files), path(dataset_file)
@@ -68,7 +68,7 @@ END_VERSIONS
 
 process EBBF_POSTPROCESS_MERGE {
     tag "$meta.id"
-    label 'process_medium'
+    label 'process_high'
 
     input:
     tuple val(meta), path(mapped_parts), path(dataset_file), path(original_transcripts), path(zarr_dir), path(noise_meta)

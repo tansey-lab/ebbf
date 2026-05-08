@@ -1,6 +1,6 @@
 process EBBF_REPORTING {
     tag "$meta.id"
-    label 'process_medium'
+    label 'process_high'
 
     input:
     tuple val(meta), path(anndata_file), path(combined_boundaries), path(zarr_dir)

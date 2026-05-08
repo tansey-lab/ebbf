@@ -4,7 +4,7 @@ process EBBF_TRAIN {
     label 'process_gpu'
 
     errorStrategy 'retry'
-    maxRetries 3
+    maxRetries 10
 
     input:
     tuple val(meta), path(dataset)
