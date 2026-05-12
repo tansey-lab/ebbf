@@ -156,17 +156,18 @@ workflow EBBF {
     ch_versions = ch_versions.mix(EBBF_POSTPROCESS_MERGE.out.versions.first())
 
     //
-    // STEP 5a: Build first-class cell_boundaries_combined.parquet output
+    // STEP 5a: Build first-class cell_boundaries_ebbf.parquet output
     //
     ch_boundaries_input = EBBF_POSTPROCESS_MERGE.out.results
         .join(ch_transcripts)
-        .join(ch_samplesheet)
 
     EBBF_BOUNDARIES(ch_boundaries_input)
     ch_versions = ch_versions.mix(EBBF_BOUNDARIES.out.versions.first())
 
     //
-    // STEP 5b: Reporting - HTML/PDF analysis & plots from h5ad + combined boundaries
+    // STEP 5b: Reporting - HTML/PDF analysis & plots from h5ad + EBBF boundaries
+    //   (default Xenium boundaries are loaded inside reporting from the zarr dir
+    //   for comparison plots; we don't bake them into the boundaries parquet)
     // Can be disabled with --reporting false to save compute time
     //
     if (params.reporting) {

@@ -37,10 +37,10 @@ def main():
         help="Path to original transcripts parquet file (for boundary visualization)",
     )
     parser.add_argument(
-        "--combined_boundaries",
+        "--ebbf_boundaries",
         type=str,
         default=None,
-        help="Path to a prebuilt cell_boundaries_combined.parquet "
+        help="Path to a prebuilt cell_boundaries_ebbf.parquet "
         "(skips boundary construction; takes precedence over --ef_tx/--original_transcripts)",
     )
     parser.add_argument(
@@ -57,6 +57,6 @@ def main():
         output_dir=args.output_dir,
         ef_tx_fname=args.ef_tx,
         original_tx_fname=args.original_transcripts,
-        combined_boundaries_fname=args.combined_boundaries,
+        ebbf_boundaries_fname=args.ebbf_boundaries,
         viz_patch_size=args.viz_patch_size,
     )

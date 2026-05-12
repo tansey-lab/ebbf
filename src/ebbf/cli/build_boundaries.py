@@ -2,20 +2,19 @@ import argparse
 import logging
 from pathlib import Path
 
-from ebbf.inference.visualization import build_combined_boundaries
+from ebbf.inference.visualization import build_ebbf_boundaries
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Build the combined EBBF + default cell_boundaries_combined.parquet"
+        description="Build EBBF cell boundaries (cell_boundaries_ebbf.parquet)"
     )
     parser.add_argument("--ef_tx", type=str, required=True)
     parser.add_argument("--original_transcripts", type=str, required=True)
-    parser.add_argument("--xenium_dir", type=str, default=None)
     parser.add_argument(
         "--output",
         type=str,
-        default="cell_boundaries_combined.parquet",
+        default="cell_boundaries_ebbf.parquet",
         help="Output parquet path",
     )
     args = parser.parse_args()
@@ -25,10 +24,9 @@ def main():
         format="%(asctime)s - %(levelname)s - %(name)s - %(lineno)d - %(message)s",
     )
 
-    gdf = build_combined_boundaries(
+    gdf = build_ebbf_boundaries(
         ef_tx_fname=args.ef_tx,
         original_tx_fname=args.original_transcripts,
-        xenium_dir=args.xenium_dir,
     )
     if len(gdf) == 0:
         raise SystemExit("No boundaries built; nothing to write")

@@ -1832,7 +1832,7 @@ def reporting(
     output_dir: str = ".",
     ef_tx_fname: str | None = None,
     original_tx_fname: str | None = None,
-    combined_boundaries_fname: str | None = None,
+    ebbf_boundaries_fname: str | None = None,
     viz_patch_size: float = 500.0,
 ):
     """
@@ -1862,11 +1862,12 @@ def reporting(
     adata_default = sd.tables["table"].copy()
 
     # Step 1: Boundary visualizations
-    if combined_boundaries_fname is not None:
-        logger.info("Step 1: generating boundary visualizations from prebuilt parquet...")
+    if ebbf_boundaries_fname is not None:
+        logger.info("Step 1: generating boundary visualizations from prebuilt EBBF parquet...")
         visualize_boundaries(
             output_dir=output_dir,
-            combined_boundaries=combined_boundaries_fname,
+            ebbf_boundaries=ebbf_boundaries_fname,
+            xenium_dir=xenium_dir,
             patch_size=viz_patch_size,
         )
     elif ef_tx_fname is not None and original_tx_fname is not None:
@@ -1880,7 +1881,7 @@ def reporting(
         )
     else:
         logger.info(
-            "Step 1: skipping boundary visualization (requires --combined_boundaries or "
+            "Step 1: skipping boundary visualization (requires --ebbf_boundaries or "
             "--ef_tx and --original_transcripts)"
         )
 

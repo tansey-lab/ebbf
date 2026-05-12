@@ -16,6 +16,7 @@ from scipy.interpolate import splev, splprep
 from scipy.ndimage import gaussian_filter
 from shapely.geometry import MultiPoint, Polygon
 from skimage.measure import find_contours
+from tqdm import tqdm
 
 from ebbf.data.formats import (
     InputFormat,
@@ -164,20 +165,27 @@ def build_ebbf_boundaries(
             "Expected 'x', 'y' or 'x_location', 'y_location'."
         )
 
+    logger.info("Collecting joined transcripts (streaming)...")
     tx = ef_lf.join(orig_lf, on="transcript_id", how="left").collect(engine="streaming").to_pandas()
+    logger.info("Collected %d transcript rows", len(tx))
 
+    n_clusters = tx["ef_cluster_id"].nunique()
     logger.info(
         "Computing smooth density boundaries for %d clusters...",
-        tx["ef_cluster_id"].nunique(),
+        n_clusters,
     )
 
+    logger.info("Grouping transcripts by ef_cluster_id...")
     grouped = tx.groupby("ef_cluster_id")
+    logger.info("Grouping complete; iterating clusters...")
     results = []
     n_fallback = 0
     n_failed = 0
     n_smooth = 0
 
-    for cluster_id, group in grouped:
+    for cluster_id, group in tqdm(
+        grouped, total=n_clusters, desc="Building boundaries", unit="cluster"
+    ):
         points = group[["x_location", "y_location"]].values
         n_pts = len(points)
 
@@ -232,13 +240,14 @@ def build_ebbf_boundaries(
             else:
                 n_failed += 1
 
-        if len(results) % 5000 == 0 and len(results) > 0:
-            logger.info("  Processed %d clusters...", len(results))
-
     logger.info("  Smooth density: %d", n_smooth)
     logger.info("  Convex hull fallback: %d", n_fallback)
     logger.info("  Failed/degenerate: %d", n_failed)
 
+    logger.info("Releasing transcript dataframe before building GeoDataFrame...")
+    del tx, grouped
+
+    logger.info("Constructing EBBF GeoDataFrame from %d polygon results...", len(results))
     gdf_ebbf = gpd.GeoDataFrame(results, geometry="geometry")
     gdf_ebbf["segmentation"] = "EBBF"
     gdf_ebbf["ef_cluster_id"] = gdf_ebbf["ef_cluster_id"].astype(str)
@@ -357,22 +366,24 @@ def _render_patch(
 MAX_PATCHES = 10
 
 
-def build_combined_boundaries(
-    ef_tx_fname: str,
-    original_tx_fname: str,
-    xenium_dir: str | None = None,
+def combine_with_default(
+    gdf_ebbf: gpd.GeoDataFrame,
+    xenium_dir: str | None,
 ) -> gpd.GeoDataFrame:
     """
-    Build a combined GeoDataFrame of EBBF + default Xenium cell boundaries.
+    Combine prebuilt EBBF boundaries with default Xenium boundaries loaded from `xenium_dir`.
 
     The `segmentation` column distinguishes rows ("EBBF" vs "Default").
     """
-    gdf_ebbf = build_ebbf_boundaries(ef_tx_fname, original_tx_fname)
-    gdf_default = (
-        load_default_boundaries(xenium_dir) if xenium_dir is not None else gpd.GeoDataFrame()
-    )
+    if xenium_dir is not None:
+        logger.info("Loading default Xenium boundaries from %s...", xenium_dir)
+        gdf_default = load_default_boundaries(xenium_dir)
+        logger.info("Default boundaries loaded: %d polygons", len(gdf_default))
+    else:
+        gdf_default = gpd.GeoDataFrame()
 
     if len(gdf_default) > 0 and len(gdf_ebbf) > 0:
+        logger.info("Combining EBBF + default boundaries...")
         gdf_combined = pd.concat([gdf_default, gdf_ebbf], ignore_index=True)
     elif len(gdf_ebbf) > 0:
         gdf_combined = gdf_ebbf
@@ -388,7 +399,7 @@ def visualize_boundaries(
     ef_tx_fname: str | None = None,
     original_tx_fname: str | None = None,
     xenium_dir: str | None = None,
-    combined_boundaries: gpd.GeoDataFrame | str | None = None,
+    ebbf_boundaries: gpd.GeoDataFrame | str | None = None,
     patch_size: float = 500.0,
     dpi: int = 150,
 ):
@@ -399,23 +410,29 @@ def visualize_boundaries(
     - Full tissue overview: up to MAX_PATCHES randomly-sampled populated tiles
     - Zoomed regions at the center
 
-    Either pass a pre-built `combined_boundaries` (GeoDataFrame or path to a
-    cell_boundaries_combined.parquet), or pass the raw inputs to build one.
+    Either pass a pre-built `ebbf_boundaries` (GeoDataFrame or path to a
+    cell_boundaries_ebbf.parquet), or pass the raw inputs to build one. Default
+    Xenium boundaries are loaded here from `xenium_dir` (if provided) and
+    combined in-memory just for visualization.
     """
     os.makedirs(output_dir, exist_ok=True)
     output_prefix = os.path.join(output_dir, "boundaries")
 
-    if combined_boundaries is None:
+    if ebbf_boundaries is None:
         if ef_tx_fname is None or original_tx_fname is None:
             raise ValueError(
-                "visualize_boundaries needs either combined_boundaries or "
+                "visualize_boundaries needs either ebbf_boundaries or "
                 "(ef_tx_fname, original_tx_fname)"
             )
-        gdf_combined = build_combined_boundaries(ef_tx_fname, original_tx_fname, xenium_dir)
-    elif isinstance(combined_boundaries, str):
-        gdf_combined = gpd.read_parquet(combined_boundaries)
+        logger.info("Building EBBF boundaries from transcripts for visualization...")
+        gdf_ebbf_only = build_ebbf_boundaries(ef_tx_fname, original_tx_fname)
+    elif isinstance(ebbf_boundaries, str):
+        logger.info("Loading prebuilt EBBF boundaries from %s...", ebbf_boundaries)
+        gdf_ebbf_only = gpd.read_parquet(ebbf_boundaries)
     else:
-        gdf_combined = combined_boundaries
+        gdf_ebbf_only = ebbf_boundaries
+
+    gdf_combined = combine_with_default(gdf_ebbf_only, xenium_dir)
 
     if len(gdf_combined) == 0:
         logger.warning("No boundaries to visualize")

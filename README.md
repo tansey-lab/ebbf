@@ -174,7 +174,7 @@ This generates:
 
 - `boundaries_patch_XXX.pdf` - Full tissue visualization split into patches
 - `boundaries_zoom_*.pdf` - Zoomed views of center regions
-- `cell_boundaries_combined.parquet` - Combined GeoParquet with both segmentations
+- `cell_boundaries_ebbf.parquet` - GeoParquet of EBBF cell polygons (default Xenium boundaries are loaded from `--xenium_dir` at report time and combined in-memory for comparison plots)
 
 The `--xenium_dir` argument accepts either Xenium Ranger output or SpatialData zarr directories.
 

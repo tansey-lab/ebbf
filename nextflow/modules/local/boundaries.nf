@@ -3,11 +3,11 @@ process EBBF_BOUNDARIES {
     label 'process_medium'
 
     input:
-    tuple val(meta), path(ef_parquet), path(original_transcripts), path(zarr_dir)
+    tuple val(meta), path(ef_parquet), path(original_transcripts)
 
     output:
-    tuple val(meta), path("cell_boundaries_combined.parquet"), emit: boundaries
-    path "versions.yml"                                      , emit: versions
+    tuple val(meta), path("cell_boundaries_ebbf.parquet"), emit: boundaries
+    path "versions.yml"                                  , emit: versions
 
     script:
     def args = task.ext.args ?: ''
@@ -15,8 +15,7 @@ process EBBF_BOUNDARIES {
     ebbf-build-boundaries \\
         --ef_tx ${ef_parquet} \\
         --original_transcripts ${original_transcripts} \\
-        --xenium_dir ${zarr_dir} \\
-        --output cell_boundaries_combined.parquet \\
+        --output cell_boundaries_ebbf.parquet \\
         ${args}
 
     cat <<-END_VERSIONS > versions.yml
