@@ -31,8 +31,9 @@ def _add_denovo_filter_args(parser: argparse.ArgumentParser):
         type=float,
         default=25.0,
         help=(
-            "Drop de novo cells with transcript counts below this percentile of"
-            " input cell transcript counts (default: 25.0; set 0 to disable)"
+            "Drop de novo and split cells with transcript counts below this"
+            " percentile of input cell transcript counts (default: 25.0;"
+            " set 0 to disable)"
         ),
     )
     parser.add_argument(
@@ -40,8 +41,8 @@ def _add_denovo_filter_args(parser: argparse.ArgumentParser):
         type=float,
         default=5.0,
         help=(
-            "Drop de novo cells with convex-hull area below this percentile of"
-            " input nucleus ellipse areas (default: 5.0; set 0 to disable)"
+            "Drop de novo and split cells with convex-hull area below this"
+            " percentile of input cell areas (default: 5.0; set 0 to disable)"
         ),
     )
     parser.add_argument(
@@ -49,9 +50,10 @@ def _add_denovo_filter_args(parser: argparse.ArgumentParser):
         type=str,
         default=None,
         help=(
-            "Path to write a per-de-novo-cluster filter report parquet"
-            " (columns: ef_cluster_id, n_tx, area, thresholds, pass flags, kept)."
-            " Defaults to '<anndata_output stem>.denovo_filter_report.parquet'."
+            "Path to write a per-cluster filter report parquet covering de novo"
+            " and split clusters (columns: ef_cluster_id, cell_type, n_tx, area,"
+            " thresholds, pass flags, kept). Defaults to"
+            " '<anndata_output stem>.denovo_filter_report.parquet'."
         ),
     )
     parser.add_argument(
@@ -59,8 +61,8 @@ def _add_denovo_filter_args(parser: argparse.ArgumentParser):
         type=str,
         default=None,
         help=(
-            "Path to write a MultiQC custom-content HTML summary of the"
-            " de novo filter. Defaults to"
+            "Path to write a MultiQC custom-content HTML summary of the de novo"
+            " + split filter. Defaults to"
             " '<anndata_output stem>.denovo_filter_mqc.html'."
         ),
     )

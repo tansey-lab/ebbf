@@ -2,7 +2,7 @@ import argparse
 import logging
 from pathlib import Path
 
-from ebbf.inference.visualization import build_ebbf_boundaries
+from ebbf.inference.visualization import build_ebbf_boundaries_to_parquet
 
 
 def main():
@@ -17,6 +17,12 @@ def main():
         default="cell_boundaries_ebbf.parquet",
         help="Output parquet path",
     )
+    parser.add_argument(
+        "--chunk_size",
+        type=int,
+        default=10000,
+        help="Number of ef clusters to process per chunk",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -24,14 +30,12 @@ def main():
         format="%(asctime)s - %(levelname)s - %(name)s - %(lineno)d - %(message)s",
     )
 
-    gdf = build_ebbf_boundaries(
+    out = Path(args.output)
+    n = build_ebbf_boundaries_to_parquet(
         ef_tx_fname=args.ef_tx,
         original_tx_fname=args.original_transcripts,
+        output_path=out,
+        chunk_size=args.chunk_size,
     )
-    if len(gdf) == 0:
+    if n == 0:
         raise SystemExit("No boundaries built; nothing to write")
-
-    out = Path(args.output)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    gdf.to_parquet(out)
-    logging.getLogger(__name__).info("Wrote %s (%d polygons)", out, len(gdf))

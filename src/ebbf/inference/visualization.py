@@ -5,8 +5,12 @@ Creates smooth density boundaries from EBBF transcript assignments and compares
 them with default Xenium cell boundaries.
 """
 
+import gc
 import logging
 import os
+import shutil
+import tempfile
+from pathlib import Path
 
 import geopandas as gpd
 import matplotlib
@@ -120,6 +124,182 @@ def smooth_density_region(
         return poly
     except Exception:
         return None
+
+
+def _polygon_for_cluster(points: np.ndarray) -> tuple[Polygon | None, str]:
+    """Build a polygon for a single cluster's transcript points.
+
+    Returns (polygon, method) where method is one of "smooth_density",
+    "convex_hull", or "failed" (with polygon=None).
+    """
+    n_pts = len(points)
+    if n_pts < 3:
+        return None, "failed"
+
+    if n_pts < 10:
+        poly = MultiPoint([(p[0], p[1]) for p in points]).convex_hull
+        if poly.geom_type == "Polygon":
+            return poly, "convex_hull"
+        return None, "failed"
+
+    gs = 64 if n_pts < 50 else (128 if n_pts < 200 else 256)
+    poly = smooth_density_region(
+        points, grid_size=gs, threshold_rel=0.15, spline_smooth=3.0, spline_points=200
+    )
+    if poly is not None and poly.geom_type == "Polygon" and poly.area > 0:
+        return poly, "smooth_density"
+
+    poly = MultiPoint([(p[0], p[1]) for p in points]).convex_hull
+    if poly.geom_type == "Polygon":
+        return poly, "convex_hull"
+    return None, "failed"
+
+
+def _resolve_orig_lf(original_tx_fname: str):
+    """Build a lazy frame of (transcript_id, x_location, y_location) from original tx."""
+    import polars as pl
+
+    orig_cols = pl.scan_parquet(original_tx_fname).collect_schema().names()
+    if "x" in orig_cols and "y" in orig_cols:
+        return pl.scan_parquet(original_tx_fname).select(
+            [
+                pl.col("transcript_id"),
+                pl.col("x").alias("x_location"),
+                pl.col("y").alias("y_location"),
+            ]
+        )
+    if "x_location" in orig_cols and "y_location" in orig_cols:
+        return pl.scan_parquet(original_tx_fname).select(
+            ["transcript_id", "x_location", "y_location"]
+        )
+    raise ValueError(
+        f"Could not find coordinate columns in {original_tx_fname}. "
+        "Expected 'x', 'y' or 'x_location', 'y_location'."
+    )
+
+
+def build_ebbf_boundaries_to_parquet(
+    ef_tx_fname: str,
+    original_tx_fname: str,
+    output_path: str | Path,
+    chunk_size: int = 10000,
+) -> int:
+    """
+    Build EBBF boundaries in cluster-id chunks, spilling part files to disk.
+
+    For each chunk of cluster ids, scans the ef-tx parquet with predicate
+    pushdown to load only the transcripts for those clusters, joins to
+    original transcript coordinates, builds polygons, writes a part file,
+    then frees memory before moving to the next chunk. All part files are
+    concatenated into `output_path` at the end.
+
+    Returns the number of polygons written.
+    """
+    import polars as pl
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Scanning EBBF transcripts for unique cluster ids...")
+    cluster_ids_df = (
+        pl.scan_parquet(ef_tx_fname)
+        .select(pl.col("ef_cluster_id"))
+        .filter(pl.col("ef_cluster_id").is_not_null())
+        .unique()
+        .collect(engine="streaming")
+    )
+    cluster_ids = cluster_ids_df.get_column("ef_cluster_id").to_list()
+    n_clusters = len(cluster_ids)
+    logger.info("Found %d unique clusters; chunk_size=%d", n_clusters, chunk_size)
+
+    if n_clusters == 0:
+        raise ValueError("No non-null ef_cluster_id values found in ef_tx parquet")
+
+    orig_lf = _resolve_orig_lf(original_tx_fname)
+
+    parts_dir = Path(tempfile.mkdtemp(prefix="ebbf_boundaries_parts_", dir=output_path.parent))
+    logger.info("Writing intermediate part files to %s", parts_dir)
+
+    n_smooth = 0
+    n_fallback = 0
+    n_failed = 0
+    n_total = 0
+    part_paths: list[Path] = []
+
+    try:
+        n_chunks = (n_clusters + chunk_size - 1) // chunk_size
+        pbar = tqdm(total=n_clusters, desc="Building boundaries", unit="cluster")
+        try:
+            for chunk_idx in range(n_chunks):
+                chunk_ids = cluster_ids[chunk_idx * chunk_size : (chunk_idx + 1) * chunk_size]
+                pbar.set_postfix_str(f"chunk {chunk_idx + 1}/{n_chunks}")
+
+                ef_lf = (
+                    pl.scan_parquet(ef_tx_fname)
+                    .select(["transcript_id", "ef_cluster_id"])
+                    .filter(pl.col("ef_cluster_id").is_in(chunk_ids))
+                )
+                tx = (
+                    ef_lf.join(orig_lf, on="transcript_id", how="left")
+                    .collect(engine="streaming")
+                    .to_pandas()
+                )
+
+                results = []
+                for cluster_id, group in tx.groupby("ef_cluster_id"):
+                    points = group[["x_location", "y_location"]].values
+                    poly, method = _polygon_for_cluster(points)
+                    if poly is None:
+                        n_failed += 1
+                    else:
+                        results.append(
+                            {
+                                "ef_cluster_id": cluster_id,
+                                "geometry": poly,
+                                "boundary_method": method,
+                            }
+                        )
+                        if method == "smooth_density":
+                            n_smooth += 1
+                        else:
+                            n_fallback += 1
+                    pbar.update(1)
+
+                del tx
+
+                if results:
+                    gdf_part = gpd.GeoDataFrame(results, geometry="geometry")
+                    gdf_part["segmentation"] = "EBBF"
+                    gdf_part["ef_cluster_id"] = gdf_part["ef_cluster_id"].astype(str)
+                    part_path = parts_dir / f"part-{chunk_idx:05d}.parquet"
+                    gdf_part.to_parquet(part_path)
+                    part_paths.append(part_path)
+                    n_total += len(gdf_part)
+                    del gdf_part
+                del results
+                gc.collect()
+        finally:
+            pbar.close()
+
+        logger.info(
+            "Polygon stats: smooth=%d, convex_hull=%d, failed=%d, total=%d",
+            n_smooth,
+            n_fallback,
+            n_failed,
+            n_total,
+        )
+
+        if not part_paths:
+            raise RuntimeError("No part files were written; nothing to concatenate")
+
+        logger.info("Concatenating %d part files into %s...", len(part_paths), output_path)
+        gdf_full = pd.concat((gpd.read_parquet(p) for p in part_paths), ignore_index=True)
+        gdf_full = gpd.GeoDataFrame(gdf_full, geometry="geometry")
+        gdf_full.to_parquet(output_path)
+        logger.info("Wrote %s (%d polygons)", output_path, len(gdf_full))
+        return len(gdf_full)
+    finally:
+        shutil.rmtree(parts_dir, ignore_errors=True)
 
 
 def build_ebbf_boundaries(

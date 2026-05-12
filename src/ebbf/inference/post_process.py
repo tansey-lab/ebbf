@@ -840,12 +840,13 @@ def _write_denovo_filter_mqc_html(
 
     html = f"""<!--
 id: 'ebbf_denovo_filter'
-section_name: 'EBB&amp;Flow De Novo Cell Filter'
+section_name: 'EBB&amp;Flow De Novo + Split Cell Filter'
 description: >-
-    Filtering of de novo cells against the input segmentation. De novo clusters whose
-    transcript count falls below the p{tx_pctile:g} input cell count, or whose
-    convex-hull area falls below the p{area_pctile:g} input cell area ({area_source}),
-    are dropped before AnnData construction.
+    Filtering of de novo and split cells against the input segmentation. Candidate
+    clusters whose transcript count falls below the p{tx_pctile:g} input cell count,
+    or whose convex-hull area falls below the p{area_pctile:g} input cell area
+    ({area_source}), are dropped before AnnData construction. Original cells are
+    not affected.
 plot_type: 'html'
 pconfig:
     id: 'ebbf_denovo_filter_plot'
@@ -855,7 +856,8 @@ pconfig:
 <table class="table" style="width:auto">
   <thead><tr><th>Metric</th><th style="text-align:right">Value</th></tr></thead>
   <tbody>
-    <tr><td>De novo clusters evaluated</td><td style="text-align:right">{n_before:,}</td></tr>
+    <tr><td>De novo + split clusters evaluated</td>
+        <td style="text-align:right">{n_before:,}</td></tr>
     <tr><td>Kept</td><td style="text-align:right">{n_after:,} ({pct_kept:.1f}%)</td></tr>
     <tr><td>Dropped</td>
         <td style="text-align:right">{n_before - n_after:,} ({pct_dropped:.1f}%)</td></tr>
@@ -869,8 +871,8 @@ pconfig:
         <td style="text-align:right">{tx_threshold:.2f}</td></tr>
     <tr><td>area threshold (p{area_pctile:g} of input, ref={area_source})</td>
         <td style="text-align:right">{area_threshold:.2f}</td></tr>
-    <tr><td>median de novo n_tx</td><td style="text-align:right">{tx_med:.1f}</td></tr>
-    <tr><td>median de novo area</td><td style="text-align:right">{area_med:.2f}</td></tr>
+    <tr><td>median candidate n_tx</td><td style="text-align:right">{tx_med:.1f}</td></tr>
+    <tr><td>median candidate area</td><td style="text-align:right">{area_med:.2f}</td></tr>
   </tbody>
 </table>
 </div>
@@ -917,12 +919,14 @@ def create_anndata(
     2. Split cells: mahalanobis_distance <= 1 and centroid_distance > cd_cutoff
     3. De novo cells: mahalanobis_distance > 1
 
-    De novo cells are further filtered against the input segmentation:
-    clusters with transcript count below the ``denovo_min_tx_pctile`` percentile
-    of input cell transcript counts, or with convex-hull area below the
-    ``denovo_min_area_pctile`` percentile of input cell-polygon areas (summed
-    triangulation areas; falls back to nucleus ellipse area if cell shapes are
-    unavailable), are dropped. Set either percentile to 0 to disable.
+    De novo and split cells are further filtered against the input
+    segmentation: clusters with transcript count below the
+    ``denovo_min_tx_pctile`` percentile of input cell transcript counts, or
+    with convex-hull area below the ``denovo_min_area_pctile`` percentile of
+    input cell-polygon areas (summed triangulation areas; falls back to
+    nucleus ellipse area if cell shapes are unavailable), are dropped.
+    Original cells are never filtered out by these thresholds. Set either
+    percentile to 0 to disable.
 
     Args:
         ef_tx_fname: Path to the transcript assignment parquet file
@@ -930,9 +934,10 @@ def create_anndata(
         dataset: STDataset with nucleus spatial data
         cd_cutoff: Centroid distance cutoff for cell classification
         denovo_min_tx_pctile: Percentile of input cell transcript counts used
-            as the minimum-size threshold for de novo cells (default: 25.0).
-        denovo_min_area_pctile: Percentile of input nucleus ellipse areas used
-            as the minimum-area threshold for de novo cells (default: 5.0).
+            as the minimum-size threshold for de novo and split cells
+            (default: 25.0).
+        denovo_min_area_pctile: Percentile of input cell areas used as the
+            minimum-area threshold for de novo and split cells (default: 5.0).
         denovo_filter_report_fname: Parquet path for the per-de-novo-cluster
             filter report (transcript count, convex-hull area, thresholds, and
             pass/fail flags). If None, derived as
@@ -981,14 +986,15 @@ def create_anndata(
         ]
     )
 
-    # Filter de novo clusters against input segmentation percentile thresholds.
-    # Tx-count threshold uses nuc_cell_counts; area threshold uses π × |det(S)|
-    # from the nucleus ellipse matrix. Zeros are dropped from the reference so
-    # empty segmentations don't collapse the percentile to 0. A per-cluster
-    # report is always written at denovo_filter_report_fname (empty if no
-    # de novo clusters exist) so downstream consumers can rely on its presence.
-    denovo_mask = pl.col("cell_type") == "denovo"
-    n_denovo_before = int(cluster_info.filter(denovo_mask).height)
+    # Filter de novo AND split clusters against input segmentation percentile
+    # thresholds. Tx-count threshold uses nuc_cell_counts; area threshold uses
+    # cell-polygon area when available, falling back to nucleus ellipse area.
+    # Zeros are dropped from the reference so empty segmentations don't
+    # collapse the percentile to 0. A per-cluster report is always written
+    # (empty if no candidate clusters exist) so downstream consumers can rely
+    # on its presence.
+    candidate_mask = pl.col("cell_type").is_in(["denovo", "split"])
+    n_candidate_before = int(cluster_info.filter(candidate_mask).height)
     filter_active = denovo_min_tx_pctile > 0 or denovo_min_area_pctile > 0
 
     input_tx = np.asarray(dataset.nuc_cell_counts)
@@ -1010,6 +1016,7 @@ def create_anndata(
     report_schema = {
         "ef_cluster_id": cluster_info.schema["ef_cluster_id"],
         "cell_id": cluster_info.schema["cell_id"],
+        "cell_type": pl.Utf8,
         "x": cluster_info.schema["x"],
         "y": cluster_info.schema["y"],
         "centroid_distance": cluster_info.schema["centroid_distance"],
@@ -1026,17 +1033,17 @@ def create_anndata(
         "kept": pl.Boolean,
     }
 
-    if n_denovo_before > 0:
-        denovo_ids = cluster_info.filter(denovo_mask)["ef_cluster_id"].to_list()
-        denovo_tx = (
-            ldf.filter(pl.col("ef_cluster_id").is_in(denovo_ids))
+    if n_candidate_before > 0:
+        candidate_ids = cluster_info.filter(candidate_mask)["ef_cluster_id"].to_list()
+        candidate_tx = (
+            ldf.filter(pl.col("ef_cluster_id").is_in(candidate_ids))
             .select(["ef_cluster_id", "x", "y"])
             .collect()
         )
 
         n_tx_per_cluster: dict[int, int] = {}
         area_per_cluster: dict[int, float] = {}
-        for key, group in denovo_tx.group_by("ef_cluster_id"):
+        for key, group in candidate_tx.group_by("ef_cluster_id"):
             cid = key[0] if isinstance(key, tuple) else key
             xy = group.select(["x", "y"]).to_numpy()
             n_tx_per_cluster[cid] = xy.shape[0]
@@ -1051,21 +1058,21 @@ def create_anndata(
         stats_df = pl.DataFrame(
             {
                 "ef_cluster_id": list(n_tx_per_cluster.keys()),
-                "_denovo_n_tx": list(n_tx_per_cluster.values()),
-                "_denovo_area": [area_per_cluster[c] for c in n_tx_per_cluster.keys()],
+                "_candidate_n_tx": list(n_tx_per_cluster.values()),
+                "_candidate_area": [area_per_cluster[c] for c in n_tx_per_cluster.keys()],
             }
         )
         cluster_info = cluster_info.join(stats_df, on="ef_cluster_id", how="left")
 
-        pass_tx = pl.col("_denovo_n_tx").fill_null(0) >= tx_threshold
-        pass_area = pl.col("_denovo_area").fill_null(0.0) >= area_threshold
+        pass_tx = pl.col("_candidate_n_tx").fill_null(0) >= tx_threshold
+        pass_area = pl.col("_candidate_area").fill_null(0.0) >= area_threshold
 
         report = (
-            cluster_info.filter(denovo_mask)
+            cluster_info.filter(candidate_mask)
             .with_columns(
                 [
-                    pl.col("_denovo_n_tx").fill_null(0).cast(pl.Int64).alias("n_tx"),
-                    pl.col("_denovo_area").fill_null(0.0).cast(pl.Float64).alias("area"),
+                    pl.col("_candidate_n_tx").fill_null(0).cast(pl.Int64).alias("n_tx"),
+                    pl.col("_candidate_area").fill_null(0.0).cast(pl.Float64).alias("area"),
                     pl.lit(tx_threshold).alias("tx_threshold"),
                     pl.lit(area_threshold).alias("area_threshold"),
                     pl.lit(denovo_min_tx_pctile).alias("tx_pctile"),
@@ -1080,19 +1087,19 @@ def create_anndata(
         )
 
         if filter_active:
-            keep_expr = (~denovo_mask) | (pass_tx & pass_area)
+            keep_expr = (~candidate_mask) | (pass_tx & pass_area)
             cluster_info = cluster_info.filter(keep_expr)
-        cluster_info = cluster_info.drop(["_denovo_n_tx", "_denovo_area"])
+        cluster_info = cluster_info.drop(["_candidate_n_tx", "_candidate_area"])
     else:
         report = pl.DataFrame(schema=report_schema)
 
     report.write_parquet(denovo_filter_report_fname)
-    n_denovo_after = int(cluster_info.filter(denovo_mask).height)
+    n_candidate_after = int(cluster_info.filter(candidate_mask).height)
     _write_denovo_filter_mqc_html(
         denovo_filter_mqc_fname,
         sample_id=Path(output_fname).stem,
-        n_before=n_denovo_before,
-        n_after=n_denovo_after,
+        n_before=n_candidate_before,
+        n_after=n_candidate_after,
         tx_threshold=tx_threshold,
         area_threshold=area_threshold,
         tx_pctile=denovo_min_tx_pctile,
@@ -1101,10 +1108,10 @@ def create_anndata(
         report=report,
     )
     logger.info(
-        "De novo filter: %d → %d (tx_count >= %.1f [p%.0f],"
+        "De novo+split filter: %d → %d (tx_count >= %.1f [p%.0f],"
         " area >= %.2f [p%.0f, ref=%s]); parquet → %s (%d rows), mqc → %s",
-        n_denovo_before,
-        n_denovo_after,
+        n_candidate_before,
+        n_candidate_after,
         tx_threshold,
         denovo_min_tx_pctile,
         area_threshold,
