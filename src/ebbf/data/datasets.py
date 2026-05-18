@@ -31,11 +31,43 @@ class NuclearPatchDataset(Dataset):
         cell_triangle_num: np.ndarray | None = None,
         cell_triangle_xy: np.ndarray | None = None,
         cell_triangle_probs: np.ndarray | None = None,
+        tissue_mask: "object | None" = None,
     ):
 
         # Compute bounds directly from nuclei positions
         self.data_min = torch.from_numpy(nuc2xy.min(axis=0)).float()
         self.data_max = torch.from_numpy(nuc2xy.max(axis=0)).float()
+
+        # Optional tissue mask: a GeoDataFrame (or any object exposing a unary
+        # union of shapely geometries) restricting patch centers to lie within
+        # the union of its polygons. When None, fall back to uniform sampling
+        # over the bounding box.
+        self._tissue_geom = None
+        self._tissue_bounds = None
+        if tissue_mask is not None:
+            from shapely.ops import unary_union
+
+            geoms = list(tissue_mask.geometry)
+            if len(geoms) == 0:
+                raise ValueError("tissue_mask has no geometries")
+            self._tissue_geom = unary_union(geoms)
+            minx, miny, maxx, maxy = self._tissue_geom.bounds
+            # Restrict sampling box to the intersection of data bounds and
+            # tissue bounds so rejection sampling converges quickly.
+            sample_min = torch.tensor(
+                [max(minx, self.data_min[0].item()), max(miny, self.data_min[1].item())],
+                dtype=torch.float32,
+            )
+            sample_max = torch.tensor(
+                [min(maxx, self.data_max[0].item()), min(maxy, self.data_max[1].item())],
+                dtype=torch.float32,
+            )
+            if (sample_max <= sample_min).any():
+                raise ValueError(
+                    "tissue_mask bounds do not overlap nuclei bounds; "
+                    "check coordinate system / units"
+                )
+            self._tissue_bounds = (sample_min, sample_max)
 
         self.nuc2gene_probs = TorchCSR(nuc2gene_probs)
         self.n_genes: int = nuc2gene_probs.shape[1]
@@ -98,9 +130,23 @@ class NuclearPatchDataset(Dataset):
                     f">={self.min_nucs} nuclei (found {n_nuc})"
                 )
 
-            ## Sample the center of the patch within data bounds
-            patch_center = torch.rand(1, 2)
-            patch_center = (self.data_max - self.data_min) * patch_center + self.data_min
+            ## Sample the center of the patch within data bounds (or within
+            ## the tissue mask bounds when one is provided, then reject any
+            ## center that falls outside the mask polygons).
+            if self._tissue_geom is not None:
+                from shapely.geometry import Point
+
+                sample_min, sample_max = self._tissue_bounds
+                while True:
+                    patch_center = torch.rand(1, 2)
+                    patch_center = (sample_max - sample_min) * patch_center + sample_min
+                    if self._tissue_geom.contains(
+                        Point(patch_center[0, 0].item(), patch_center[0, 1].item())
+                    ):
+                        break
+            else:
+                patch_center = torch.rand(1, 2)
+                patch_center = (self.data_max - self.data_min) * patch_center + self.data_min
 
             idx = self.rtree.lookup_center_radius(
                 x_center=patch_center[0, 0].item(),

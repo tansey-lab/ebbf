@@ -7,7 +7,7 @@ process EBBF_TRAIN {
     maxRetries 10
 
     input:
-    tuple val(meta), path(dataset)
+    tuple val(meta), path(dataset), path(tissue_mask)
 
     // Stage checkpoint from persistent location before task starts (for retries)
     beforeScript {
@@ -43,6 +43,7 @@ process EBBF_TRAIN {
     def chan_mult = params.channel_mult.tokenize(',').collect { it.trim() as int }
     def wandb_key = params.wandb_api_key ?: ''
     def model_weights = params.model_weights ?: ''
+    def tissue_mask_arg = tissue_mask ? "--tissue_mask ${tissue_mask}" : ''
     """
     mkdir -p model_output
 
@@ -132,7 +133,7 @@ EOFCONFIG
     export WANDB_RUN_ID="${workflow.runName}_${meta.id}"
     export WANDB_RESUME="allow"
 
-    ebbf-train --config train_config.yaml --dataset ${dataset} --output_dir model_output \$RESUME_FLAG
+    ebbf-train --config train_config.yaml --dataset ${dataset} --output_dir model_output \$RESUME_FLAG ${tissue_mask_arg}
 
     cat <<-END_VERSIONS > versions.yml
 "${task.process}":

@@ -94,7 +94,10 @@ workflow EBBF {
                 .map { meta, dataset -> [ meta, file(params.model_weights) ] }
         } else {
             // Train the model (optionally resuming from model_weights)
-            EBBF_TRAIN(ch_dataset)
+            def tissue_mask_file = params.tissue_mask ? file(params.tissue_mask, checkIfExists: true) : []
+            ch_train_input = ch_dataset
+                .map { meta, dataset -> [ meta, dataset, tissue_mask_file ] }
+            EBBF_TRAIN(ch_train_input)
             ch_versions = ch_versions.mix(EBBF_TRAIN.out.versions.first())
             ch_weights = EBBF_TRAIN.out.weights
         }

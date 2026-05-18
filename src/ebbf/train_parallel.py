@@ -270,6 +270,7 @@ def main_distributed(
     dataset_path: str,
     output_dir: str,
     resume_from: str | None = None,
+    tissue_mask_path: str | None = None,
 ):
     """Distributed training entry point (multi-GPU)."""
     ddp_setup(rank, world_size)
@@ -281,6 +282,7 @@ def main_distributed(
         num_workers=num_workers,
         world_size=world_size,
         rank=rank,
+        tissue_mask_path=tissue_mask_path,
     )
 
     device = torch.device(f"cuda:{rank}")
@@ -327,6 +329,7 @@ def main_single(
     dataset_path: str,
     output_dir: str,
     resume_from: str | None = None,
+    tissue_mask_path: str | None = None,
 ):
     """Single-process training entry point (CPU or single GPU)."""
     num_workers = config.train.num_workers
@@ -336,7 +339,11 @@ def main_single(
         f"max_tx={config.data.max_tx}, dataset_size={config.data.dataset_size}"
     )
     dataloader = instantiate_train_dataloader(
-        config, dataset_path=dataset_path, distributed=False, num_workers=num_workers
+        config,
+        dataset_path=dataset_path,
+        distributed=False,
+        num_workers=num_workers,
+        tissue_mask_path=tissue_mask_path,
     )
     logger.info("DataLoader initialized, workers starting to prefetch batches...")
 

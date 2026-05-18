@@ -32,6 +32,17 @@ def main():
         default=None,
         help="Path to checkpoint file to resume training from",
     )
+    parser.add_argument(
+        "--tissue_mask",
+        type=str,
+        default=None,
+        help=(
+            "Optional path to a tissue boundary shapefile (GeoParquet or "
+            "GeoJSON). When provided, patches are sampled only from inside "
+            "the union of the polygons. If omitted, patches are sampled "
+            "uniformly over the nuclei bounding box."
+        ),
+    )
     args = parser.parse_args()
 
     # Load YAML and merge with structured config schema for validation
@@ -42,6 +53,7 @@ def main():
     dataset_path: str = args.dataset
     output_dir: str = args.output_dir
     resume_from: str | None = args.resume_from
+    tissue_mask_path: str | None = args.tissue_mask or None
 
     if config.get("prev_model_folder"):
         prev_model_folder = config.prev_model_folder
@@ -55,12 +67,33 @@ def main():
         logger.info("Found %d CUDA device(s), using distributed training...", world_size)
         mp.spawn(
             main_distributed,
-            args=(world_size, config, dataset_path, output_dir, resume_from),
+            args=(
+                world_size,
+                config,
+                dataset_path,
+                output_dir,
+                resume_from,
+                tissue_mask_path,
+            ),
             nprocs=world_size,
         )
     elif world_size == 1:
         logger.info("Found 1 CUDA device, using single-GPU training...")
-        main_single(config, torch.device("cuda:0"), dataset_path, output_dir, resume_from)
+        main_single(
+            config,
+            torch.device("cuda:0"),
+            dataset_path,
+            output_dir,
+            resume_from,
+            tissue_mask_path,
+        )
     else:
         logger.info("No CUDA devices found, running on CPU...")
-        main_single(config, torch.device("cpu"), dataset_path, output_dir, resume_from)
+        main_single(
+            config,
+            torch.device("cpu"),
+            dataset_path,
+            output_dir,
+            resume_from,
+            tissue_mask_path,
+        )

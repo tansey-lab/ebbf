@@ -509,7 +509,12 @@ class STDataset:
         return cls(**converted)
 
     def get_nuc_dataset(
-        self, patch_size: float, patch_padding: float, dataset_size: int, min_nucs: int
+        self,
+        patch_size: float,
+        patch_padding: float,
+        dataset_size: int,
+        min_nucs: int,
+        tissue_mask: "object | None" = None,
     ):
 
         n_nucs = self.nuc_xy.shape[0]
@@ -547,5 +552,6 @@ class STDataset:
             cell_triangle_probs=(
                 self.cell_triangle_probs if self.cell_triangle_probs.shape[0] > 0 else None
             ),
+            tissue_mask=tissue_mask,
         )
         return dataset

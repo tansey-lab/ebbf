@@ -1,3 +1,5 @@
+import os
+
 import torch
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -8,6 +10,20 @@ from ebbf.data.sampling import TranscriptSampler
 from ebbf.data.st_dataset import STDataset
 
 
+def load_tissue_mask(path: str):
+    """Load a tissue-boundary shapefile as a GeoDataFrame.
+
+    Supports GeoParquet (.parquet/.geoparquet) and GeoJSON (.geojson/.json),
+    plus anything else geopandas.read_file accepts (e.g. ESRI shapefiles).
+    """
+    import geopandas as gpd
+
+    ext = os.path.splitext(path)[1].lower()
+    if ext in (".parquet", ".geoparquet"):
+        return gpd.read_parquet(path)
+    return gpd.read_file(path)
+
+
 def instantiate_train_dataloader(
     config: EBBFConfig,
     dataset_path: str,
@@ -15,17 +31,21 @@ def instantiate_train_dataloader(
     num_workers: int,
     world_size: int | None = None,
     rank: int | None = None,
+    tissue_mask_path: str | None = None,
 ):
 
     stdata = STDataset.load(dataset_path)
     config.n_genes = stdata.genes.shape[0]
     config.n_ctypes = 1
 
+    tissue_mask = load_tissue_mask(tissue_mask_path) if tissue_mask_path else None
+
     dataset = stdata.get_nuc_dataset(
         patch_size=config.data.patch_size,
         patch_padding=config.data.patch_padding,
         dataset_size=int(config.data.dataset_size),
         min_nucs=int(config.data.min_nucs),
+        tissue_mask=tissue_mask,
     )
     collate_fn = nuclear_patch_collate_fn
 

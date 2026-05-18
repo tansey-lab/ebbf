@@ -70,6 +70,13 @@
                     "help_text": "When set, skips training and inference and runs postprocessing on existing shards (same part-*.parquet naming as the infer step). Multi-sample: use <inference_results>/<sample_id>/part-*.parquet (sample_id matches the samplesheet sample column). Single-sample: if that path is empty, falls back to <inference_results>/part-*.parquet. When set, model_weights, resume_training, and n_infer_workers are unused.",
                     "fa_icon": "fas fa-forward"
                 },
+                "tissue_mask": {
+                    "type": "string",
+                    "format": "file-path",
+                    "description": "Optional tissue boundary shapefile (GeoParquet or GeoJSON).",
+                    "help_text": "When provided, training samples patches only from within the union of the polygons in this file. When omitted, patches are sampled uniformly over the nuclei bounding box.",
+                    "fa_icon": "fas fa-draw-polygon"
+                },
                 "n_postprocess_workers": {
                     "type": "integer",
                     "default": 4,
