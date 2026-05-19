@@ -120,7 +120,14 @@ def _compute_diff_adata(adata_ebbf, adata_default):
     sc.tl.pca(adata_diff, n_comps=n_comps)
     n_neighbors = min(15, adata_diff.n_obs - 1)
     sc.pp.neighbors(adata_diff, n_neighbors=n_neighbors, n_pcs=n_comps)
-    sc.tl.umap(adata_diff)
+    try:
+        sc.tl.umap(adata_diff)
+    except TypeError as e:
+        logger.warning(
+            f"UMAP failed with too few datapoints ({adata_diff.n_obs} cells): {e}. "
+            "Skipping UMAP/clustering on diff matrix."
+        )
+        return adata_diff, X_diff, genes, shared_ids
 
     for res in [0.25, 0.5, 1.0]:
         sc.tl.leiden(
