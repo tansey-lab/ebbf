@@ -76,6 +76,7 @@ process EBBF_POSTPROCESS_MERGE {
     output:
     tuple val(meta), path("ebbf.parquet"), emit: results
     tuple val(meta), path("ebbf.h5ad"), emit: anndata
+    tuple val(meta), path("ebbf.unfiltered.h5ad"), emit: anndata_unfiltered
     tuple val(meta), path("denovo_filter_report.parquet"), emit: denovo_filter_report
     // multiqc HTML keeps the sample id in its filename — multiqc collects across
     // samples and identically-named files would collide during staging.
