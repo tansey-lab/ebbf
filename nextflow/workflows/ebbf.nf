@@ -44,7 +44,7 @@ workflow EBBF {
         ch_transcripts = ch_samplesheet
             .map { meta, zarr_dir -> [ meta, file("${params.preprocess_dir}/transcripts.parquet") ] }
     } else {
-        def tissue_boundaries_file = file(params.tissue_boundaries, checkIfExists: true)
+        def tissue_boundaries_file = params.tissue_boundaries ? file(params.tissue_boundaries, checkIfExists: true) : []
         ch_preprocess_input = ch_samplesheet
             .map { meta, zarr_dir -> [ meta, zarr_dir, tissue_boundaries_file ] }
         EBBF_PREPROCESS(ch_preprocess_input)

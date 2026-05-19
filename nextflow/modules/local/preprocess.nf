@@ -14,6 +14,7 @@ process EBBF_PREPROCESS {
     script:
     def args = task.ext.args ?: ''
     def prefix = task.ext.prefix ?: "${meta.id}"
+    def shapefile_arg = tissue_boundaries ? "--shapefile ${tissue_boundaries}" : ''
     """
     mkdir -p plots
 
@@ -21,7 +22,7 @@ process EBBF_PREPROCESS {
         --zarr_dir ${zarr_dir} \\
         --output stdata.npz \\
         --transcripts_output transcripts.parquet \\
-        --shapefile ${tissue_boundaries} \\
+        ${shapefile_arg} \\
         ${args}
 
     cat <<-END_VERSIONS > versions.yml
