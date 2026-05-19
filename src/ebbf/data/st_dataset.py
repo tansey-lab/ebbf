@@ -285,6 +285,28 @@ def _compute_boxes_from_bounds(
     return boxes
 
 
+def _load_tissue_polygon(shapefile_path: str):
+    """Load a tissue mask from any geopandas-readable vector file and return its
+    unioned shapely (Multi)Polygon."""
+    gdf = gpd.read_file(shapefile_path)
+    if len(gdf) == 0:
+        raise ValueError(f"Tissue boundaries file {shapefile_path} contains no geometries")
+    polygon = shapely.unary_union(gdf.geometry.values)
+    if polygon.is_empty:
+        raise ValueError(f"Tissue boundaries file {shapefile_path} produced an empty union")
+    return polygon
+
+
+def _filter_boxes_by_tissue(boxes: np.ndarray, tissue_polygon) -> np.ndarray:
+    """Keep only boxes (xmin, ymin, xmax, ymax) whose extent intersects the tissue polygon."""
+    if len(boxes) == 0:
+        return boxes
+    prepared = shapely.prepared.prep(tissue_polygon)
+    box_polys = [shapely.geometry.box(*b) for b in boxes]
+    keep = np.array([prepared.intersects(p) for p in box_polys], dtype=bool)
+    return boxes[keep]
+
+
 def _compute_polygon_triangulation(polygons):
     all_triangles = shapely.constrained_delaunay_triangles(polygons)
 
@@ -309,6 +331,7 @@ def process_zarr(
     box_width: float = 400,
     nuc_density_per_um2: float = 1e-5,
     input_format: str | None = None,
+    shapefile: str | None = None,
 ):
     """
     Process spatial transcriptomics data into an STDataset object.
@@ -416,6 +439,24 @@ def process_zarr(
         nuc_density_per_um2,
     )
 
+    ## Restrict to tissue boundary, if supplied
+    tissue_polygon = None
+    if shapefile is not None:
+        tissue_polygon = _load_tissue_polygon(shapefile)
+        n_before = len(boxes)
+        boxes = _filter_boxes_by_tissue(boxes, tissue_polygon)
+        logger.info(
+            "Tissue boundary filter: kept %d / %d tiles intersecting %s",
+            len(boxes),
+            n_before,
+            shapefile,
+        )
+        if len(boxes) == 0:
+            raise ValueError(
+                f"No sampling tiles intersect tissue boundary {shapefile}. "
+                "Check that the boundary file is in the same coordinate system as the data."
+            )
+
     ## Finalize stats
     nuc_total_tx_counts = nuc_gene_counts.sum(axis=1)
     nuc_gene_counts: coo_array = nuc_gene_counts.tocoo()
@@ -423,8 +464,14 @@ def process_zarr(
     # No cell types - set all to 0
     nuc_ctype_idx = np.zeros(len(nuc_cell_id), dtype=np.int64)
 
+    extra_kwargs = {}
+    if tissue_polygon is not None:
+        extra_kwargs["tissue_polygon_wkb"] = np.frombuffer(
+            shapely.to_wkb(tissue_polygon), dtype=np.uint8
+        )
     stdata = STDataset(
         boxes=boxes,
+        **extra_kwargs,
         nuc_cell_id=nuc_cell_id,
         nuc_total_tx_counts=nuc_total_tx_counts,
         nuc_ctype_idx=nuc_ctype_idx,
@@ -490,6 +537,9 @@ class STDataset:
         # Convert float64 arrays to float32 before saving
         data = {}
         for key, val in self.__dict__.items():
+            if val is None:
+                # Don't let np.savez coerce None into an object scalar
+                continue
             if isinstance(val, np.ndarray) and val.dtype == np.float64:
                 data[key] = val.astype(np.float32)
             else:
@@ -527,6 +577,13 @@ class STDataset:
 
         # Always use zeros for cell types (no cell type info)
         nuc2ctypes = np.zeros_like(self.nuc_ctype_idx)
+
+        # Deserialize tissue polygon if present so the sampler can constrain patches
+        tissue_polygon = None
+        wkb = getattr(self, "tissue_polygon_wkb", None)
+        if isinstance(wkb, np.ndarray) and wkb.dtype == np.uint8 and wkb.ndim == 1 and wkb.size > 0:
+            tissue_polygon = shapely.from_wkb(wkb.tobytes())
+
         dataset = NuclearPatchDataset(
             nuc2xy=self.nuc_xy,
             nuc2total_gene_count=self.nuc_total_tx_counts,
@@ -547,5 +604,6 @@ class STDataset:
             cell_triangle_probs=(
                 self.cell_triangle_probs if self.cell_triangle_probs.shape[0] > 0 else None
             ),
+            tissue_polygon=tissue_polygon,
         )
         return dataset
