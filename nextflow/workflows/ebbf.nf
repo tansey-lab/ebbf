@@ -174,6 +174,7 @@ workflow EBBF {
         ch_reporting_input = EBBF_POSTPROCESS_MERGE.out.anndata
             .join(EBBF_BOUNDARIES.out.boundaries)
             .join(ch_samplesheet)
+            .join(ch_dataset)
 
         EBBF_REPORTING(ch_reporting_input)
         ch_versions = ch_versions.mix(EBBF_REPORTING.out.versions.first())

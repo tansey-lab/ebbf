@@ -120,7 +120,14 @@ def _compute_diff_adata(adata_ebbf, adata_default):
     sc.tl.pca(adata_diff, n_comps=n_comps)
     n_neighbors = min(15, adata_diff.n_obs - 1)
     sc.pp.neighbors(adata_diff, n_neighbors=n_neighbors, n_pcs=n_comps)
-    sc.tl.umap(adata_diff)
+    try:
+        sc.tl.umap(adata_diff)
+    except TypeError as e:
+        logger.warning(
+            f"UMAP failed with too few datapoints ({adata_diff.n_obs} cells): {e}. "
+            "Skipping UMAP/clustering on diff matrix."
+        )
+        return adata_diff, X_diff, genes, shared_ids
 
     for res in [0.25, 0.5, 1.0]:
         sc.tl.leiden(
@@ -1826,6 +1833,224 @@ after EBBF resegmentation.</p>
     logger.info(f"Saved {output_path}")
 
 
+def generate_ellipse_cluster_viz(
+    stdata,
+    adata_ebbf,
+    output_dir: str,
+    fname: str = "ellipse_clusters.html",
+):
+    """Write an interactive HTML viz of EBBF cluster centroids over nuclear ellipses.
+
+    Ellipses are reconstructed from ``stdata.nuc_xy`` / ``stdata.nuc_ellipse_mat``
+    (no external parquet input). Centroids come from ``adata_ebbf.obs`` and show
+    cluster type (denovo/split/original) and transcript count on mouseover.
+    """
+    out_path = Path(output_dir) / fname
+
+    nuc_xy = np.asarray(stdata.nuc_xy, dtype=np.float32)
+    S = np.asarray(stdata.nuc_ellipse_mat, dtype=np.float32)
+    # Pack ellipse params: cx, cy, s00, s01, s10, s11. JS will sample boundary.
+    ellipse_arr = np.concatenate([nuc_xy, S.reshape(-1, 4)], axis=1).astype(np.float32)
+
+    obs = adata_ebbf.obs
+    cx = obs["x_centroid"].to_numpy(dtype=np.float32)
+    cy = obs["y_centroid"].to_numpy(dtype=np.float32)
+    cat = obs["cell_category"].astype(str).to_numpy()
+    n_tx = obs["n_tx"].to_numpy(dtype=np.int32)
+
+    centroids = {
+        "x": cx.tolist(),
+        "y": cy.tolist(),
+        "cat": cat.tolist(),
+        "n_tx": n_tx.tolist(),
+    }
+
+    all_x = np.concatenate([nuc_xy[:, 0], cx]) if cx.size else nuc_xy[:, 0]
+    all_y = np.concatenate([nuc_xy[:, 1], cy]) if cy.size else nuc_xy[:, 1]
+    bounds = {
+        "xmin": float(all_x.min()),
+        "xmax": float(all_x.max()),
+        "ymin": float(all_y.min()),
+        "ymax": float(all_y.max()),
+    }
+
+    payload = {
+        "ellipses": ellipse_arr.flatten().tolist(),
+        "centroids": centroids,
+        "bounds": bounds,
+    }
+    data_json = json.dumps(payload, separators=(",", ":"))
+
+    html = """<!doctype html>
+<html><head><meta charset="utf-8"><title>EBBF cluster centroids over nuclear ellipses</title>
+<style>
+  body { font-family: -apple-system, sans-serif; margin: 0; background: #111; color: #ddd; }
+  header { padding: 10px 14px; background: #1c1c1c; border-bottom: 1px solid #333; }
+  header h1 { margin: 0; font-size: 15px; font-weight: 500; }
+  header .legend { font-size: 12px; color: #aaa; margin-top: 4px; }
+  header .legend span { display: inline-block; margin-right: 14px; }
+  header .swatch { display: inline-block; width: 10px; height: 10px; vertical-align: middle;
+                   margin-right: 4px; border-radius: 50%; }
+  #wrap { position: relative; }
+  canvas { display: block; background: #0a0a0a; cursor: crosshair; }
+  #tip { position: absolute; pointer-events: none; background: rgba(20,20,20,0.95);
+         border: 1px solid #555; padding: 6px 8px; font-size: 12px; border-radius: 4px;
+         display: none; white-space: nowrap; }
+  #hint { position: absolute; right: 10px; top: 10px; font-size: 11px; color: #888;
+          background: rgba(0,0,0,0.4); padding: 4px 8px; border-radius: 3px; }
+</style></head>
+<body>
+<header>
+  <h1>EBBF cluster centroids over nuclear ellipses</h1>
+  <div class="legend">
+    <span><span class="swatch" style="background:#6ea8fe"></span>nuclear ellipse</span>
+    <span><span class="swatch" style="background:#2ecc71"></span>original</span>
+    <span><span class="swatch" style="background:#f1c40f"></span>split</span>
+    <span><span class="swatch" style="background:#e74c3c"></span>denovo</span>
+  </div>
+</header>
+<div id="wrap">
+  <canvas id="cv"></canvas>
+  <div id="tip"></div>
+  <div id="hint">scroll to zoom, drag to pan</div>
+</div>
+<script>
+const DATA = __DATA__;
+const CAT_COLORS = {original:"#2ecc71", split:"#f1c40f", denovo:"#e74c3c"};
+
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+const tip = document.getElementById("tip");
+const wrap = document.getElementById("wrap");
+
+function fitCanvas() {
+  cv.width = window.innerWidth;
+  cv.height = Math.max(400, window.innerHeight - document.querySelector("header").offsetHeight);
+}
+fitCanvas();
+window.addEventListener("resize", () => { fitCanvas(); draw(); });
+
+const b = DATA.bounds;
+const dataW = b.xmax - b.xmin, dataH = b.ymax - b.ymin;
+let scale = Math.min(cv.width / dataW, cv.height / dataH) * 0.95;
+let tx = (cv.width  - dataW * scale) / 2 - b.xmin * scale;
+let ty = (cv.height - dataH * scale) / 2 - b.ymin * scale;
+// Flip Y so larger y is up (image coords are typically not flipped, but
+// spatial transcriptomics y often increases upward visually — match it):
+let flipY = false;
+
+function worldToScreen(x, y) {
+  return [x * scale + tx, (flipY ? -y : y) * scale + ty];
+}
+function screenToWorld(sx, sy) {
+  return [(sx - tx) / scale, (flipY ? -1 : 1) * (sy - ty) / scale];
+}
+
+const E = DATA.ellipses;       // flat [cx,cy,s00,s01,s10,s11,...]
+const N_E = E.length / 6;
+const C = DATA.centroids;
+const N_C = C.x.length;
+
+// Precompute ellipse boundary samples (in world coords).
+const N_PTS = 32;
+const COS = new Float32Array(N_PTS), SIN = new Float32Array(N_PTS);
+for (let i = 0; i < N_PTS; i++) {
+  const t = (2 * Math.PI * i) / N_PTS;
+  COS[i] = Math.cos(t); SIN[i] = Math.sin(t);
+}
+
+function draw() {
+  ctx.fillStyle = "#0a0a0a";
+  ctx.fillRect(0, 0, cv.width, cv.height);
+
+  // Ellipses
+  ctx.lineWidth = 0.6;
+  ctx.strokeStyle = "rgba(110,168,254,0.55)";
+  ctx.beginPath();
+  for (let k = 0; k < N_E; k++) {
+    const o = k * 6;
+    const cx = E[o], cy = E[o+1];
+    const s00 = E[o+2], s01 = E[o+3], s10 = E[o+4], s11 = E[o+5];
+    for (let i = 0; i < N_PTS; i++) {
+      const u = COS[i], v = SIN[i];
+      const wx = cx + s00*u + s01*v;
+      const wy = cy + s10*u + s11*v;
+      const [sx, sy] = worldToScreen(wx, wy);
+      if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+    }
+    ctx.closePath();
+  }
+  ctx.stroke();
+
+  // Centroids
+  const r = Math.max(1.2, Math.min(3.5, 0.0008 * scale * Math.sqrt(dataW * dataH)));
+  for (let i = 0; i < N_C; i++) {
+    const [sx, sy] = worldToScreen(C.x[i], C.y[i]);
+    if (sx < -5 || sy < -5 || sx > cv.width+5 || sy > cv.height+5) continue;
+    ctx.fillStyle = CAT_COLORS[C.cat[i]] || "#bbb";
+    ctx.beginPath();
+    ctx.arc(sx, sy, r, 0, 2*Math.PI);
+    ctx.fill();
+  }
+}
+draw();
+
+// Hover detection: build a screen-space grid each draw is heavy; instead
+// linear-scan with a small radius. Acceptable for tens of thousands of points.
+const PICK_R_PX = 6;
+cv.addEventListener("mousemove", e => {
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  let best = -1, bestD2 = PICK_R_PX * PICK_R_PX;
+  for (let i = 0; i < N_C; i++) {
+    const [sx, sy] = worldToScreen(C.x[i], C.y[i]);
+    const dx = sx - mx, dy = sy - my;
+    const d2 = dx*dx + dy*dy;
+    if (d2 < bestD2) { bestD2 = d2; best = i; }
+  }
+  if (best >= 0) {
+    tip.style.display = "block";
+    tip.style.left = (mx + 12) + "px";
+    tip.style.top  = (my + 12) + "px";
+    tip.innerHTML = "<b>" + C.cat[best] + "</b><br>n_tx: " + C.n_tx[best];
+  } else {
+    tip.style.display = "none";
+  }
+});
+cv.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+
+// Pan
+let dragging = false, lastX = 0, lastY = 0;
+cv.addEventListener("mousedown", e => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
+window.addEventListener("mouseup", () => { dragging = false; });
+window.addEventListener("mousemove", e => {
+  if (!dragging) return;
+  tx += e.clientX - lastX;
+  ty += e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  draw();
+});
+
+// Zoom
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const [wx, wy] = screenToWorld(mx, my);
+  const factor = Math.exp(-e.deltaY * 0.0015);
+  scale *= factor;
+  tx = mx - wx * scale;
+  ty = my - (flipY ? -wy : wy) * scale;
+  draw();
+}, { passive: false });
+</script>
+</body></html>
+"""
+    html = html.replace("__DATA__", data_json)
+    out_path.write_text(html)
+    logger.info("Saved ellipse/cluster viz to %s", out_path)
+
+
 def reporting(
     anndata_fname: str,
     xenium_dir: str,
@@ -1834,6 +2059,7 @@ def reporting(
     original_tx_fname: str | None = None,
     ebbf_boundaries_fname: str | None = None,
     viz_patch_size: float = 500.0,
+    stdata_fname: str | None = None,
 ):
     """
     Generate all reports comparing EBBF vs default segmentation.
@@ -1915,5 +2141,15 @@ def reporting(
     # Step 5: Morphology report
     logger.info("Step 5: generating morphology report...")
     generate_morphology_report(adata_ebbf, adata_default, xenium_dir, output_dir)
+
+    # Step 6: Ellipse / cluster centroid interactive viz
+    if stdata_fname is not None:
+        logger.info("Step 6: generating ellipse/cluster centroid interactive viz...")
+        from ebbf.data.st_dataset import STDataset
+
+        stdata = STDataset.load(stdata_fname)
+        generate_ellipse_cluster_viz(stdata, adata_ebbf, output_dir)
+    else:
+        logger.info("Step 6: skipping ellipse/cluster viz (requires --stdata)")
 
     logger.info("DONE! All reports generated.")

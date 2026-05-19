@@ -3,25 +3,27 @@ process EBBF_REPORTING {
     label 'process_high'
 
     input:
-    tuple val(meta), path(anndata_file), path(ebbf_boundaries), path(zarr_dir)
+    tuple val(meta), path(anndata_file), path(ebbf_boundaries), path(zarr_dir), path(stdata)
 
     output:
-    tuple val(meta), path("reports/*.html") , emit: reports
-    tuple val(meta), path("reports/*.h5ad") , emit: diff_anndata, optional: true
-    tuple val(meta), path("reports/*.pdf")  , emit: visualizations, optional: true
+    tuple val(meta), path("*.html")               , emit: reports
+    tuple val(meta), path("ellipse_clusters.html"), emit: ellipse_clusters
+    // narrow to the specific output filename — the staged input ebbf.h5ad lives
+    // in the same workdir and would otherwise match a `*.h5ad` glob.
+    tuple val(meta), path("adata_diff.h5ad"), emit: diff_anndata, optional: true
+    tuple val(meta), path("*.pdf")          , emit: visualizations, optional: true
     path "versions.yml"                     , emit: versions
 
     script:
     def args = task.ext.args ?: ''
     """
-    mkdir -p reports
-
     ebbf-reporting \\
         ${anndata_file} \\
         --xenium_dir ${zarr_dir} \\
-        --output_dir reports \\
+        --output_dir . \\
         --ebbf_boundaries ${ebbf_boundaries} \\
         --viz_patch_size ${params.viz_patch_size} \\
+        --stdata ${stdata} \\
         ${args}
 
     cat <<-END_VERSIONS > versions.yml

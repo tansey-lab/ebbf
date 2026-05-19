@@ -222,13 +222,12 @@ def main():
     elif args.command == "map":
         map_clusters_to_cells(
             input_path=args.input_step4,
-            output_path=args.output,
             nuc_centroid=stdata.nuc_xy,
             nuc_ellipse_mat=stdata.nuc_ellipse_mat,
             nuc_cell_id=stdata.nuc_cell_id,
             worker_id=args.worker_id,
             worker_n=args.n_workers,
-        )
+        ).sink_parquet(args.output)
     elif args.command == "merge":
         anndata_fname = args.anndata_output if args.anndata_output else None
         post_process_merge(

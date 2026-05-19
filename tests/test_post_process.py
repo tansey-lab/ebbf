@@ -10,6 +10,7 @@ from ebbf.inference.post_process import (
     ck_decode_grid_version,
     ck_decode_super_grid_label,
     ck_encode,
+    compute_cluster_to_cell_mapping,
     double_grid_and_group,
     map_clusters_to_cells,
 )
@@ -195,9 +196,9 @@ def test_map_clusters_to_cells_sharded_matches_single(tmp_path):
         nuc_cell_id=nuc_cell_id,
     )
 
-    map_clusters_to_cells(output_path=out_single, **common_kwargs)
-    map_clusters_to_cells(output_path=out_shard0, worker_id=0, worker_n=2, **common_kwargs)
-    map_clusters_to_cells(output_path=out_shard1, worker_id=1, worker_n=2, **common_kwargs)
+    map_clusters_to_cells(**common_kwargs).sink_parquet(out_single)
+    map_clusters_to_cells(worker_id=0, worker_n=2, **common_kwargs).sink_parquet(out_shard0)
+    map_clusters_to_cells(worker_id=1, worker_n=2, **common_kwargs).sink_parquet(out_shard1)
 
     sort_cols = ["transcript_id", "ef_cluster_id"]
     df_single = pl.read_parquet(out_single).sort(sort_cols)
@@ -218,3 +219,153 @@ def test_map_clusters_to_cells_sharded_matches_single(tmp_path):
             )
         else:
             assert df_single[col].equals(df_sharded[col])
+
+
+class TestComputeClusterToCellMapping:
+    """Unit tests for the cluster→cell distance metric.
+
+    ``nuc_ellipse_mat[i]`` (``M``) maps the unit circle to the ellipse for
+    nucleus ``i``, so the Mahalanobis quadratic form uses
+    ``Q = inv(M @ M.T)``. For a diagonal ``M = diag(a, b)`` this reduces to
+    ``sqrt((dx/a)^2 + (dy/b)^2)``, which is what we exercise below.
+    """
+
+    def test_nearest_centroid_assignment(self):
+        """Each cluster is paired with the closest nucleus centroid."""
+        nuc_centroid = np.array([[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]])
+        nuc_ellipse_mat = np.tile(np.eye(2), (3, 1, 1))
+        nuc_cell_id = np.array([100, 200, 300])
+
+        cluster_id = np.array([1, 2, 3])
+        cluster_xy = np.array([[0.5, 0.1], [9.0, 0.2], [0.3, 9.5]])
+
+        out = compute_cluster_to_cell_mapping(
+            cluster_id=cluster_id,
+            cluster_xy=cluster_xy,
+            nuc_centroid=nuc_centroid,
+            nuc_ellipse_mat=nuc_ellipse_mat,
+            nuc_cell_id=nuc_cell_id,
+        )
+
+        assert out["ef_cluster_id"].to_list() == [1, 2, 3]
+        assert out["cell_id"].to_list() == [100, 200, 300]
+
+    def test_centroid_distance_is_euclidean(self):
+        nuc_centroid = np.array([[0.0, 0.0], [100.0, 100.0]])
+        nuc_ellipse_mat = np.tile(np.eye(2), (2, 1, 1))
+        nuc_cell_id = np.array([1, 2])
+
+        cluster_xy = np.array([[3.0, 4.0], [103.0, 104.0]])
+        out = compute_cluster_to_cell_mapping(
+            cluster_id=np.array([10, 20]),
+            cluster_xy=cluster_xy,
+            nuc_centroid=nuc_centroid,
+            nuc_ellipse_mat=nuc_ellipse_mat,
+            nuc_cell_id=nuc_cell_id,
+        )
+
+        np.testing.assert_allclose(out["centroid_distance"].to_numpy(), [5.0, 5.0])
+
+    def test_mahalanobis_equals_euclidean_for_identity_ellipse(self):
+        """With M = I, Mahalanobis collapses to Euclidean distance."""
+        nuc_centroid = np.array([[0.0, 0.0]])
+        nuc_ellipse_mat = np.array([np.eye(2)])
+        nuc_cell_id = np.array([7])
+
+        cluster_xy = np.array([[3.0, 4.0], [0.0, 2.0], [1.0, 0.0]])
+        out = compute_cluster_to_cell_mapping(
+            cluster_id=np.array([1, 2, 3]),
+            cluster_xy=cluster_xy,
+            nuc_centroid=nuc_centroid,
+            nuc_ellipse_mat=nuc_ellipse_mat,
+            nuc_cell_id=nuc_cell_id,
+        )
+
+        np.testing.assert_allclose(
+            out["mahalanobis_distance"].to_numpy(),
+            out["centroid_distance"].to_numpy(),
+        )
+        np.testing.assert_allclose(out["mahalanobis_distance"].to_numpy(), [5.0, 2.0, 1.0])
+
+    def test_mahalanobis_diagonal_ellipse_scales_axes(self):
+        """For M = diag(a, b), Mahalanobis distance = sqrt((dx/a)^2 + (dy/b)^2)."""
+        a, b = 2.0, 5.0
+        nuc_centroid = np.array([[0.0, 0.0]])
+        nuc_ellipse_mat = np.array([[[a, 0.0], [0.0, b]]])
+        nuc_cell_id = np.array([1])
+
+        cluster_xy = np.array([[a, 0.0], [0.0, b], [a, b], [2 * a, 0.0]])
+        out = compute_cluster_to_cell_mapping(
+            cluster_id=np.arange(4),
+            cluster_xy=cluster_xy,
+            nuc_centroid=nuc_centroid,
+            nuc_ellipse_mat=nuc_ellipse_mat,
+            nuc_cell_id=nuc_cell_id,
+        )
+
+        # Points exactly on the ellipse boundary have Mahalanobis = 1
+        # (a,0), (0,b) → 1; (a,b) → sqrt(2); (2a,0) → 2
+        np.testing.assert_allclose(
+            out["mahalanobis_distance"].to_numpy(),
+            [1.0, 1.0, np.sqrt(2.0), 2.0],
+        )
+
+    def test_mahalanobis_rotated_ellipse(self):
+        """A 45°-rotated ellipse: points along the major axis stay on boundary at d=1."""
+        a, b = 4.0, 1.0
+        theta = np.pi / 4
+        R = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
+        S = np.array([[a, 0.0], [0.0, b]])
+        M = R @ S  # maps unit circle to rotated ellipse
+
+        nuc_centroid = np.array([[0.0, 0.0]])
+        nuc_ellipse_mat = np.array([M])
+        nuc_cell_id = np.array([42])
+
+        # Tip of major axis is R @ (a, 0) = (a/√2, a/√2)
+        major_tip = R @ np.array([a, 0.0])
+        # Tip of minor axis is R @ (0, b)
+        minor_tip = R @ np.array([0.0, b])
+        # Center
+        center = np.array([0.0, 0.0])
+
+        cluster_xy = np.stack([center, major_tip, minor_tip, 2 * major_tip])
+        out = compute_cluster_to_cell_mapping(
+            cluster_id=np.arange(4),
+            cluster_xy=cluster_xy,
+            nuc_centroid=nuc_centroid,
+            nuc_ellipse_mat=nuc_ellipse_mat,
+            nuc_cell_id=nuc_cell_id,
+        )
+
+        np.testing.assert_allclose(
+            out["mahalanobis_distance"].to_numpy(),
+            [0.0, 1.0, 1.0, 2.0],
+            atol=1e-12,
+        )
+
+    def test_mahalanobis_uses_assigned_centroids_ellipse(self):
+        """Each cluster's Mahalanobis distance uses the ellipse of its nearest centroid."""
+        nuc_centroid = np.array([[0.0, 0.0], [100.0, 0.0]])
+        # Nucleus 0: narrow in x. Nucleus 1: narrow in y.
+        nuc_ellipse_mat = np.array(
+            [
+                [[1.0, 0.0], [0.0, 10.0]],
+                [[10.0, 0.0], [0.0, 1.0]],
+            ]
+        )
+        nuc_cell_id = np.array([0, 1])
+
+        # Cluster A near nuc 0 offset by (1, 0): d = 1.0 (using nuc 0 ellipse)
+        # Cluster B near nuc 1 offset by (1, 0): d = 0.1 (using nuc 1 ellipse)
+        cluster_xy = np.array([[1.0, 0.0], [101.0, 0.0]])
+        out = compute_cluster_to_cell_mapping(
+            cluster_id=np.array([0, 1]),
+            cluster_xy=cluster_xy,
+            nuc_centroid=nuc_centroid,
+            nuc_ellipse_mat=nuc_ellipse_mat,
+            nuc_cell_id=nuc_cell_id,
+        )
+
+        np.testing.assert_allclose(out["mahalanobis_distance"].to_numpy(), [1.0, 0.1])
+        assert out["cell_id"].to_list() == [0, 1]

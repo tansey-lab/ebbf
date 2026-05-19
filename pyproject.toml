@@ -50,11 +50,11 @@ dependencies = [
     "igraph",
     "leidenalg",
     "spatialdata-io",
+    "multiqc",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "multiqc",
     "nf-core",
     "pytest>=7.0",
     "pytest-cov>=4.0",
@@ -95,7 +95,6 @@ pythonpath = ["src"]
 
 [dependency-groups]
 dev = [
-    "multiqc",
     "nf-core",
     "pytest>=7.0",
     "pytest-cov>=4.0",

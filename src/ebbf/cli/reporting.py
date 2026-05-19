@@ -49,6 +49,12 @@ def main():
         default=500.0,
         help="Size of each boundary visualization patch in microns (default: 500)",
     )
+    parser.add_argument(
+        "--stdata",
+        type=str,
+        default=None,
+        help="Path to preprocessed stdata.npz; enables interactive ellipse/cluster viz",
+    )
     args = parser.parse_args()
 
     reporting(
@@ -59,4 +65,5 @@ def main():
         original_tx_fname=args.original_transcripts,
         ebbf_boundaries_fname=args.ebbf_boundaries,
         viz_patch_size=args.viz_patch_size,
+        stdata_fname=args.stdata,
     )
