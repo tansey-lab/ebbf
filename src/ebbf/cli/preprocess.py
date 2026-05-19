@@ -55,7 +55,78 @@ def plot_nuclear_ellipses(
         logger.info("Saved nuclear ellipse geoparquet to %s", geoparquet_path)
 
 
-def write_summary_report(stdata, output_path: str):
+def build_tissue_mask_from_centroids(
+    nuc_xy: np.ndarray,
+    eps: float,
+    min_samples: int,
+):
+    """Build a tissue mask by DBSCAN-clustering centroids and unioning their convex hulls.
+
+    Returns a (geopandas.GeoDataFrame, sklearn labels array). The GeoDataFrame has one
+    row per cluster polygon; a separate dissolved geometry can be obtained via unary_union.
+    """
+    import geopandas as gpd
+    from shapely.geometry import MultiPoint
+    from sklearn.cluster import DBSCAN
+
+    xy = np.asarray(nuc_xy)
+    labels = DBSCAN(eps=eps, min_samples=min_samples).fit_predict(xy)
+
+    polygons = []
+    cluster_ids = []
+    for lbl in np.unique(labels):
+        if lbl == -1:
+            continue
+        pts = xy[labels == lbl]
+        if pts.shape[0] < 3:
+            continue
+        hull = MultiPoint(pts).convex_hull
+        if hull.geom_type != "Polygon":
+            continue
+        polygons.append(hull)
+        cluster_ids.append(int(lbl))
+
+    gdf = gpd.GeoDataFrame({"cluster_id": cluster_ids}, geometry=polygons)
+    logger.info(
+        "Built tissue mask from %d centroids: %d clusters, %d noise points",
+        xy.shape[0],
+        len(polygons),
+        int((labels == -1).sum()),
+    )
+    return gdf, labels
+
+
+def load_tissue_mask(shapefile_path: str):
+    """Load a tissue mask from a shapefile / any geopandas-readable vector file."""
+    import geopandas as gpd
+
+    gdf = gpd.read_file(shapefile_path)
+    logger.info("Loaded tissue mask from %s (%d geometries)", shapefile_path, len(gdf))
+    return gdf
+
+
+def plot_tissue_mask(
+    mask_gdf,
+    nuc_xy: np.ndarray,
+    output_path: str,
+):
+    """Plot the tissue mask polygons with nucleus centroids overlaid."""
+    import matplotlib.pyplot as plt
+
+    xy = np.asarray(nuc_xy)
+    fig, ax = plt.subplots(figsize=(12, 12))
+    ax.scatter(xy[:, 0], xy[:, 1], s=0.5, color="black", alpha=0.4, label="nuclei")
+    mask_gdf.boundary.plot(ax=ax, linewidth=0.8, color="crimson")
+    mask_gdf.plot(ax=ax, color="crimson", alpha=0.1)
+    ax.set_aspect("equal")
+    ax.set_title(f"Tissue mask ({len(mask_gdf)} polygons) with {xy.shape[0]} nuclei")
+    ax.legend(loc="best")
+    fig.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved tissue mask diagnostic plot to %s", output_path)
+
+
+def write_summary_report(stdata, output_path: str, include_tissue_mask: bool = False):
     """Write an HTML report with summary statistics for an STDataset."""
     import html
 
@@ -145,6 +216,8 @@ def write_summary_report(stdata, output_path: str):
 
     plot_rel = "nuclear_ellipses.pdf"
     plot_link = f'<p><a href="{plot_rel}">Nuclear ellipses (PDF)</a></p>'
+    if include_tissue_mask:
+        plot_link += '<p><a href="tissue_mask.pdf">Tissue mask (PDF)</a></p>'
 
     html_doc = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>STDataset summary</title>
@@ -201,6 +274,29 @@ def main():
         help="Box width for spatial sampling (default: 400)",
     )
     parser.add_argument(
+        "--shapefile",
+        type=str,
+        default=None,
+        help=(
+            "Optional path to a vector file (shapefile, geojson, geoparquet, ...) "
+            "containing tissue boundary polygons. If not provided, a tissue mask is "
+            "constructed by DBSCAN-clustering the nuclear centroids and unioning their "
+            "convex hulls."
+        ),
+    )
+    parser.add_argument(
+        "--tissue_mask_dbscan_eps",
+        type=float,
+        default=50.0,
+        help="DBSCAN eps for tissue mask fallback (default: 50)",
+    )
+    parser.add_argument(
+        "--tissue_mask_dbscan_min_samples",
+        type=int,
+        default=10,
+        help="DBSCAN min_samples for tissue mask fallback (default: 10)",
+    )
+    parser.add_argument(
         "--ellipse_plot_n_grid",
         type=int,
         default=64,
@@ -225,7 +321,23 @@ def main():
         nuc_cell_id=stdata.nuc_cell_id,
         geoparquet_path=os.path.join(plot_dir, "nuclear_ellipses.parquet"),
     )
-    write_summary_report(stdata, os.path.join(plot_dir, "report.html"))
+    os.makedirs(plot_dir, exist_ok=True)
+    if args.shapefile is not None:
+        mask_gdf = load_tissue_mask(args.shapefile)
+    else:
+        mask_gdf, _ = build_tissue_mask_from_centroids(
+            nuc_xy=stdata.nuc_xy,
+            eps=args.tissue_mask_dbscan_eps,
+            min_samples=args.tissue_mask_dbscan_min_samples,
+        )
+        mask_gdf.to_parquet(os.path.join(plot_dir, "tissue_mask.parquet"))
+    plot_tissue_mask(
+        mask_gdf=mask_gdf,
+        nuc_xy=stdata.nuc_xy,
+        output_path=os.path.join(plot_dir, "tissue_mask.pdf"),
+    )
+
+    write_summary_report(stdata, os.path.join(plot_dir, "report.html"), include_tissue_mask=True)
 
     # Write out original transcripts with normalized column names for postprocessing
     x_col = column_mapping["x"]
