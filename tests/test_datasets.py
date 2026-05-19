@@ -236,3 +236,163 @@ class TestSparseDataset:
 
         assert patch is not None
         assert patch["nuc2xy"].shape[0] >= sparse_dataset.min_nucs
+
+
+class TestTissueBoundarySampling:
+    """Sampling must be restricted to the supplied tissue polygon."""
+
+    def _build_dataset(self, tissue_polygon):
+        rng = np.random.default_rng(0)
+        # Dense grid of nuclei spanning [0, 100] x [0, 100] so min_nucs is never
+        # the limiting factor — the tissue polygon must be what constrains sampling.
+        xs, ys = np.meshgrid(np.linspace(1, 99, 50), np.linspace(1, 99, 50))
+        nuc_xy = np.stack([xs.ravel(), ys.ravel()], axis=1) + rng.normal(scale=0.1, size=(2500, 2))
+        n = nuc_xy.shape[0]
+        return NuclearPatchDataset(
+            nuc2xy=nuc_xy,
+            nuc2total_gene_count=np.ones(n, dtype=np.int64),
+            nuc2gene_probs=csr_array(np.ones((n, 4)) / 4),
+            nuc2ctype=np.zeros(n, dtype=np.int64),
+            nuc2cell_count=np.ones(n, dtype=np.int64),
+            patch_size=4,
+            patch_padding=1,
+            dataset_size=200,
+            min_nucs=1,
+            tissue_polygon=tissue_polygon,
+        )
+
+    def test_patch_centers_inside_polygon(self):
+        """All sampled patch centers should lie inside the tissue polygon."""
+        from shapely.geometry import Polygon
+
+        # Tissue restricted to a 50x50 square in the middle of the data extent.
+        tissue = Polygon([(25, 25), (75, 25), (75, 75), (25, 75)])
+        dataset = self._build_dataset(tissue)
+
+        for _ in range(200):
+            patch = dataset._sample_patch()
+            cx, cy = patch["patch_center"][0].tolist()
+            assert 25 <= cx <= 75, f"x={cx} outside tissue"
+            assert 25 <= cy <= 75, f"y={cy} outside tissue"
+
+    def test_bounds_tightened_to_polygon_bbox(self):
+        """data_min/data_max should be tightened to the polygon bounding box."""
+        from shapely.geometry import Polygon
+
+        tissue = Polygon([(25, 25), (75, 25), (75, 75), (25, 75)])
+        dataset = self._build_dataset(tissue)
+
+        assert dataset.data_min[0].item() == pytest.approx(25.0)
+        assert dataset.data_min[1].item() == pytest.approx(25.0)
+        assert dataset.data_max[0].item() == pytest.approx(75.0)
+        assert dataset.data_max[1].item() == pytest.approx(75.0)
+
+    def test_non_convex_polygon_excludes_holes(self):
+        """L-shaped tissue: patches must never land in the excluded quadrant."""
+        from shapely.geometry import Polygon
+
+        # L-shape covering [0,100]x[0,100] minus the top-right quadrant [50,100]x[50,100]
+        tissue = Polygon([(0, 0), (100, 0), (100, 50), (50, 50), (50, 100), (0, 100)])
+        dataset = self._build_dataset(tissue)
+
+        for _ in range(300):
+            patch = dataset._sample_patch()
+            cx, cy = patch["patch_center"][0].tolist()
+            in_excluded = cx > 50 and cy > 50
+            assert not in_excluded, f"patch center ({cx}, {cy}) landed in excluded quadrant"
+
+
+class TestBoxFilteringByTissue:
+    """_filter_boxes_by_tissue should keep only boxes intersecting the polygon."""
+
+    def test_filter_boxes_by_tissue(self):
+        from shapely.geometry import Polygon
+
+        from ebbf.data.st_dataset import _filter_boxes_by_tissue
+
+        boxes = np.array(
+            [
+                [0, 0, 10, 10],  # fully inside
+                [40, 40, 60, 60],  # straddles boundary -> intersects
+                [80, 80, 90, 90],  # fully outside
+                [49, 49, 51, 51],  # nearly all inside, touches boundary
+            ],
+            dtype=float,
+        )
+        tissue = Polygon([(0, 0), (50, 0), (50, 50), (0, 50)])
+
+        kept = _filter_boxes_by_tissue(boxes, tissue)
+        assert kept.shape[0] == 3
+        # Excluded box (the [80,80,90,90] one) is gone
+        assert not np.any(np.all(kept == np.array([80, 80, 90, 90]), axis=1))
+
+    def test_filter_boxes_empty_input(self):
+        from shapely.geometry import Polygon
+
+        from ebbf.data.st_dataset import _filter_boxes_by_tissue
+
+        tissue = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+        kept = _filter_boxes_by_tissue(np.empty((0, 4)), tissue)
+        assert kept.shape == (0, 4)
+
+    def test_no_polygon_does_not_serialize_none(self, tmp_path):
+        """An STDataset built without a tissue polygon must not write a None
+        scalar that would later be misinterpreted as WKB bytes."""
+        from ebbf.data.st_dataset import STDataset
+
+        stdata = STDataset(
+            boxes=np.array([[0, 0, 1, 1]], dtype=float),
+            nuc_cell_id=np.array(["a"]),
+            nuc_total_tx_counts=np.array([1]),
+            nuc_ctype_idx=np.array([0]),
+            nuc_cell_counts=np.array([1]),
+            nuc_xy=np.array([[0.0, 0.0]]),
+            nuc_ellipse_mat=np.eye(2)[None],
+            nuc_countmat_nuc_idx=np.array([0]),
+            nuc_countmat_gene_idx=np.array([0]),
+            nuc_countmat_counts=np.array([1]),
+            genes=np.array(["g"]),
+            tissue_polygon_wkb=None,
+        )
+        path = tmp_path / "stdata.npz"
+        stdata.save(str(path))
+
+        with np.load(str(path), allow_pickle=False) as loaded:
+            assert "tissue_polygon_wkb" not in loaded.files
+
+        # And reloading shouldn't crash when the sampler asks for the polygon
+        restored = STDataset.load(str(path))
+        assert getattr(restored, "tissue_polygon_wkb", None) is None
+
+    def test_tissue_polygon_roundtrip_through_npz(self, tmp_path):
+        """Tissue polygon must round-trip through stdata.npz without pickle."""
+        import shapely
+        from shapely.geometry import Polygon
+
+        from ebbf.data.st_dataset import STDataset
+
+        tissue = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+        wkb = np.frombuffer(shapely.to_wkb(tissue), dtype=np.uint8)
+
+        stdata = STDataset(
+            boxes=np.array([[0, 0, 1, 1]], dtype=float),
+            nuc_cell_id=np.array(["a"]),
+            nuc_total_tx_counts=np.array([1]),
+            nuc_ctype_idx=np.array([0]),
+            nuc_cell_counts=np.array([1]),
+            nuc_xy=np.array([[0.0, 0.0]]),
+            nuc_ellipse_mat=np.eye(2)[None],
+            nuc_countmat_nuc_idx=np.array([0]),
+            nuc_countmat_gene_idx=np.array([0]),
+            nuc_countmat_counts=np.array([1]),
+            genes=np.array(["g"]),
+            tissue_polygon_wkb=wkb,
+        )
+        path = tmp_path / "stdata.npz"
+        stdata.save(str(path))
+
+        # Load without pickle support to prove no object arrays are written
+        with np.load(str(path), allow_pickle=False) as loaded:
+            assert "tissue_polygon_wkb" in loaded.files
+            restored = shapely.from_wkb(loaded["tissue_polygon_wkb"].tobytes())
+        assert restored.equals(tissue)

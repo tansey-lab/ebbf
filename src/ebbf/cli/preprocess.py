@@ -308,6 +308,7 @@ def main():
         zarr_dir=args.zarr_dir,
         box_width=args.box_width,
         input_format=args.input_format,
+        shapefile=args.shapefile,
     )
     stdata.save(args.output)
     logger.info("Saved STDataset to %s", args.output)
