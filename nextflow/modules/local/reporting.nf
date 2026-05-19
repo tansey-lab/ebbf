@@ -3,10 +3,11 @@ process EBBF_REPORTING {
     label 'process_high'
 
     input:
-    tuple val(meta), path(anndata_file), path(ebbf_boundaries), path(zarr_dir)
+    tuple val(meta), path(anndata_file), path(ebbf_boundaries), path(zarr_dir), path(stdata)
 
     output:
-    tuple val(meta), path("*.html")        , emit: reports
+    tuple val(meta), path("*.html")               , emit: reports
+    tuple val(meta), path("ellipse_clusters.html"), emit: ellipse_clusters
     // narrow to the specific output filename — the staged input ebbf.h5ad lives
     // in the same workdir and would otherwise match a `*.h5ad` glob.
     tuple val(meta), path("adata_diff.h5ad"), emit: diff_anndata, optional: true
@@ -22,6 +23,7 @@ process EBBF_REPORTING {
         --output_dir . \\
         --ebbf_boundaries ${ebbf_boundaries} \\
         --viz_patch_size ${params.viz_patch_size} \\
+        --stdata ${stdata} \\
         ${args}
 
     cat <<-END_VERSIONS > versions.yml

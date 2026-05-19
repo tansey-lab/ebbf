@@ -11,12 +11,19 @@ logger = logging.getLogger(__name__)
 
 
 def plot_nuclear_ellipses(
-    nuc_xy: np.ndarray, nuc_ellipse_mat: np.ndarray, output_path: str, n_grid: int = 64
+    nuc_xy: np.ndarray,
+    nuc_ellipse_mat: np.ndarray,
+    output_path: str,
+    n_grid: int = 64,
+    nuc_cell_id: np.ndarray | None = None,
+    geoparquet_path: str | None = None,
 ):
     """Plot nuclear ellipses as a diagnostic figure.
 
     nuc_xy: (N, 2) centroids
     nuc_ellipse_mat: (N, 2, 2) ellipse matrices S
+    nuc_cell_id: (N,) cell ids used as metadata in the geoparquet output
+    geoparquet_path: optional output path for the ellipse polygons as geoparquet
     """
     import geopandas as gpd
     import matplotlib.pyplot as plt
@@ -30,7 +37,10 @@ def plot_nuclear_ellipses(
     ellipse_pts = c[:, np.newaxis, :] + np.einsum("bij, tj -> bti", S, unit)
 
     polygons = [Polygon(ellipse_pts[i]) for i in range(ellipse_pts.shape[0])]
-    gdf = gpd.GeoDataFrame(geometry=polygons)
+    data = {}
+    if nuc_cell_id is not None:
+        data["cell_id"] = np.asarray(nuc_cell_id)
+    gdf = gpd.GeoDataFrame(data, geometry=polygons)
 
     fig, ax = plt.subplots(figsize=(12, 12))
     gdf.boundary.plot(ax=ax, linewidth=0.3, color="steelblue")
@@ -39,6 +49,10 @@ def plot_nuclear_ellipses(
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
     logger.info("Saved nuclear ellipse diagnostic plot to %s", output_path)
+
+    if geoparquet_path is not None:
+        gdf.to_parquet(geoparquet_path)
+        logger.info("Saved nuclear ellipse geoparquet to %s", geoparquet_path)
 
 
 def write_summary_report(stdata, output_path: str):
@@ -208,6 +222,8 @@ def main():
         nuc_ellipse_mat=stdata.nuc_ellipse_mat,
         output_path=os.path.join(plot_dir, "nuclear_ellipses.pdf"),
         n_grid=args.ellipse_plot_n_grid,
+        nuc_cell_id=stdata.nuc_cell_id,
+        geoparquet_path=os.path.join(plot_dir, "nuclear_ellipses.parquet"),
     )
     write_summary_report(stdata, os.path.join(plot_dir, "report.html"))
 
