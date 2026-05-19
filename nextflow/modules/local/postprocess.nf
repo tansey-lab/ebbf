@@ -74,15 +74,16 @@ process EBBF_POSTPROCESS_MERGE {
     tuple val(meta), path(mapped_parts), path(dataset_file), path(original_transcripts), path(zarr_dir), path(noise_meta)
 
     output:
-    tuple val(meta), path("${prefix}.parquet"), emit: results
-    tuple val(meta), path("${prefix}.h5ad"), emit: anndata
-    tuple val(meta), path("${prefix}.denovo_filter_report.parquet"), emit: denovo_filter_report
-    tuple val(meta), path("${prefix}.denovo_filter_mqc.html"), emit: denovo_filter_mqc
+    tuple val(meta), path("ebbf.parquet"), emit: results
+    tuple val(meta), path("ebbf.h5ad"), emit: anndata
+    tuple val(meta), path("denovo_filter_report.parquet"), emit: denovo_filter_report
+    // multiqc HTML keeps the sample id in its filename — multiqc collects across
+    // samples and identically-named files would collide during staging.
+    tuple val(meta), path("${meta.id}.denovo_filter_mqc.html"), emit: denovo_filter_mqc
     path "versions.yml", emit: versions
 
     script:
     def args = task.ext.args ?: ''
-    prefix = task.ext.prefix ?: "${meta.id}"
     def cd_cutoff = params.cd_cutoff ?: 2.0
     def orig_tx_arg = "--original_transcripts ${original_transcripts}"
     def noise_meta_arg = "--noise_meta ${noise_meta}"
@@ -91,10 +92,10 @@ process EBBF_POSTPROCESS_MERGE {
         merge \\
         ${mapped_parts} \\
         --dataset ${dataset_file} \\
-        --output ${prefix}.parquet \\
-        --anndata_output ${prefix}.h5ad \\
-        --denovo_filter_report ${prefix}.denovo_filter_report.parquet \\
-        --denovo_filter_mqc ${prefix}.denovo_filter_mqc.html \\
+        --output ebbf.parquet \\
+        --anndata_output ebbf.h5ad \\
+        --denovo_filter_report denovo_filter_report.parquet \\
+        --denovo_filter_mqc ${meta.id}.denovo_filter_mqc.html \\
         --cd_cutoff ${cd_cutoff} \\
         --work_dir . \\
         ${orig_tx_arg} \\

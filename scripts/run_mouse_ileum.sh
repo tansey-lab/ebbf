@@ -11,7 +11,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 ZARR_PATH="${1:-/path/to/Xenium_Prime_Mouse_Ileum.zarr}"
 
 # Output directories
-OUTDIR="${PROJECT_DIR}/results/mouse_ileum"
+OUTDIR="${PROJECT_DIR}/results"
 WORKDIR="${PROJECT_DIR}/work"
 
 # Create samplesheet

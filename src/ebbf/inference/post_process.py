@@ -462,42 +462,33 @@ def grid_connected_components(input_path: str, output_path: str, n_parts: int = 
 ##############
 
 
-def map_clusters_to_cells(
-    input_path: str,
-    output_path: str,
+def compute_cluster_to_cell_mapping(
+    cluster_id: np.ndarray,
+    cluster_xy: np.ndarray,
     nuc_centroid: np.ndarray,
     nuc_ellipse_mat: np.ndarray,
     nuc_cell_id: np.ndarray,
-    worker_id: int | None = None,
-    worker_n: int | None = None,
-):
-    ## Build tree
+) -> pl.DataFrame:
+    """Assign each cluster to its nearest nucleus and compute distances.
+
+    For each cluster center, finds the nearest nucleus centroid (Euclidean)
+    and computes the Mahalanobis distance to that nucleus' ellipse. The
+    ellipse is parameterized by ``nuc_ellipse_mat`` ``M``: ``M`` maps the
+    unit circle to the ellipse, so the Mahalanobis metric uses
+    ``Q = inv(M @ M.T)``.
+
+    Returns a DataFrame with columns
+    ``ef_cluster_id, cell_id, centroid_distance, mahalanobis_distance``.
+    """
     tree = KDTree(nuc_centroid)
-
-    ## Read in data
-    df = pl.scan_parquet(input_path)
-
-    ## Get means of clusters
-    cluster_df = (
-        df.group_by(["ef_cluster_id"])
-        .agg(pl.col("x").mean(), pl.col("y").mean())
-        .collect(engine="streaming")
-        .to_pandas()
-    )
-    cluster_id = cluster_df["ef_cluster_id"].values
-    cluster_xy = cluster_df[["x", "y"]].values
-
-    ## Look up closest nucleus centroid
     centroid_distance, centroid_idx = tree.query(cluster_xy)
     centroid_cell_id = nuc_cell_id[centroid_idx]
 
-    ## Compute mahalanobis distance of cluster to closest centroid ellipse
     diff = cluster_xy - nuc_centroid[centroid_idx]
     Q = np.linalg.inv(np.matmul(nuc_ellipse_mat, np.swapaxes(nuc_ellipse_mat, -1, -2)))
     mahalanobis_distance = np.sqrt(np.einsum("...i,...ij,...j->...", diff, Q[centroid_idx], diff))
 
-    ## Map everything back onto the table with a single join
-    mapping_df = pl.DataFrame(
+    return pl.DataFrame(
         {
             "ef_cluster_id": cluster_id,
             "cell_id": centroid_cell_id,
@@ -505,28 +496,57 @@ def map_clusters_to_cells(
             "mahalanobis_distance": mahalanobis_distance,
         }
     )
+
+
+def map_clusters_to_cells(
+    input_path: str,
+    nuc_centroid: np.ndarray,
+    nuc_ellipse_mat: np.ndarray,
+    nuc_cell_id: np.ndarray,
+    worker_id: int | None = None,
+    worker_n: int | None = None,
+) -> pl.LazyFrame:
+    """Map clustered transcripts to nucleus cell IDs.
+
+    Returns a LazyFrame keyed by transcript with cell assignments and
+    distance columns. The caller chooses how to materialize the result
+    (e.g. ``.sink_parquet(path)`` or ``.collect()``).
+    """
+    df = pl.scan_parquet(input_path)
+
+    cluster_df = (
+        df.group_by(["ef_cluster_id"])
+        .agg(pl.col("x").mean(), pl.col("y").mean())
+        .collect(engine="streaming")
+    )
+    cluster_id = cluster_df["ef_cluster_id"].to_numpy()
+    cluster_xy = cluster_df.select(["x", "y"]).to_numpy()
+
+    mapping_df = compute_cluster_to_cell_mapping(
+        cluster_id=cluster_id,
+        cluster_xy=cluster_xy,
+        nuc_centroid=nuc_centroid,
+        nuc_ellipse_mat=nuc_ellipse_mat,
+        nuc_cell_id=nuc_cell_id,
+    )
+
     if (worker_id is not None) and (worker_n is not None):
         mapping_df = mapping_df.filter((pl.col("ef_cluster_id") % worker_n) == worker_id)
 
-    (
-        df.join(mapping_df.lazy(), on="ef_cluster_id", how="inner")
-        .select(
-            [
-                "transcript_id",
-                "feature_name",
-                "cell_id",
-                "x",
-                "y",
-                "x_initial",
-                "y_initial",
-                "centroid_distance",
-                "mahalanobis_distance",
-                "ef_cluster_id",
-            ]
-        )
-        .sink_parquet(output_path)
+    return df.join(mapping_df.lazy(), on="ef_cluster_id", how="inner").select(
+        [
+            "transcript_id",
+            "feature_name",
+            "cell_id",
+            "x",
+            "y",
+            "x_initial",
+            "y_initial",
+            "centroid_distance",
+            "mahalanobis_distance",
+            "ef_cluster_id",
+        ]
     )
-    return "Success!"
 
 
 def post_process_prepare(
@@ -1153,6 +1173,14 @@ def create_anndata(
     cell_id_to_xy = {}
     cell_id_to_type_label = {}
     cell_id_to_parent = {}
+    # Debug fields: the nearest nucleus and the distances used to classify
+    # this cluster. Empty original cells (no transcripts) leave these as None.
+    cell_id_to_nearest_centroid_cell_id = {}
+    cell_id_to_nearest_centroid_x = {}
+    cell_id_to_nearest_centroid_y = {}
+    cell_id_to_centroid_distance = {}
+    cell_id_to_mahalanobis_distance = {}
+    cell_id_to_ef_cluster_id = {}
 
     for row in cluster_info.iter_rows(named=True):
         uid = row["unified_cell_id"]
@@ -1173,6 +1201,14 @@ def create_anndata(
             cell_id_to_parent[uid] = None
 
         cell_id_to_type_label[uid] = ctype
+
+        nearest_id = row["cell_id"]
+        cell_id_to_nearest_centroid_cell_id[uid] = str(nearest_id)
+        cell_id_to_nearest_centroid_x[uid] = cell_id2x_centroid.get(nearest_id)
+        cell_id_to_nearest_centroid_y[uid] = cell_id2y_centroid.get(nearest_id)
+        cell_id_to_centroid_distance[uid] = row["centroid_distance"]
+        cell_id_to_mahalanobis_distance[uid] = row["mahalanobis_distance"]
+        cell_id_to_ef_cluster_id[uid] = row["ef_cluster_id"]
 
     # Annotate transcripts with unified_cell_id via ef_cluster_id join
     cluster_mapping_df = pl.DataFrame(
@@ -1219,6 +1255,14 @@ def create_anndata(
     adata.obs["x_centroid"] = adata.obs.index.map(lambda uid: cell_id_to_xy[uid][0])
     adata.obs["y_centroid"] = adata.obs.index.map(lambda uid: cell_id_to_xy[uid][1])
     adata.obs["n_tx"] = np.array(adata.X.sum(axis=1)).flatten().astype(int)
+
+    # Debug fields: classifier inputs for this cluster (None for empty originals)
+    adata.obs["nearest_centroid_cell_id"] = adata.obs.index.map(cell_id_to_nearest_centroid_cell_id)
+    adata.obs["nearest_centroid_x"] = adata.obs.index.map(cell_id_to_nearest_centroid_x)
+    adata.obs["nearest_centroid_y"] = adata.obs.index.map(cell_id_to_nearest_centroid_y)
+    adata.obs["centroid_distance"] = adata.obs.index.map(cell_id_to_centroid_distance)
+    adata.obs["mahalanobis_distance"] = adata.obs.index.map(cell_id_to_mahalanobis_distance)
+    adata.obs["ef_cluster_id"] = adata.obs.index.map(cell_id_to_ef_cluster_id)
 
     # Store spatial coordinates in obsm for compatibility with spatial analysis tools
     adata.obsm["spatial"] = np.column_stack(
@@ -1352,11 +1396,10 @@ def post_process(
     temp_path5 = os.path.join(work_dir, temp_fname5)
     map_clusters_to_cells(
         input_path=temp_path4,
-        output_path=temp_path5,
         nuc_centroid=dataset.nuc_xy,
         nuc_ellipse_mat=dataset.nuc_ellipse_mat,
         nuc_cell_id=dataset.nuc_cell_id,
-    )
+    ).sink_parquet(temp_path5)
     _log_step("Step 5", step_start, temp_path5, timings)
 
     ## Remove fourth intermediate file

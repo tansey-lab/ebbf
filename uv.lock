@@ -1032,6 +1032,7 @@ dependencies = [
     { name = "igraph" },
     { name = "leidenalg" },
     { name = "matplotlib" },
+    { name = "multiqc" },
     { name = "numpy" },
     { name = "omegaconf" },
     { name = "pandas" },
@@ -1052,7 +1053,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "multiqc" },
     { name = "nf-core" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -1065,7 +1065,6 @@ dev = [
     { name = "boto3" },
     { name = "cirro" },
     { name = "ipython" },
-    { name = "multiqc" },
     { name = "nf-core" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -1084,7 +1083,7 @@ requires-dist = [
     { name = "igraph" },
     { name = "leidenalg" },
     { name = "matplotlib" },
-    { name = "multiqc", marker = "extra == 'dev'" },
+    { name = "multiqc" },
     { name = "nf-core", marker = "extra == 'dev'" },
     { name = "numpy" },
     { name = "omegaconf" },
@@ -1114,7 +1113,6 @@ dev = [
     { name = "boto3", specifier = ">=1.26.0" },
     { name = "cirro", specifier = ">=1.0.0" },
     { name = "ipython", specifier = ">=9.11.0" },
-    { name = "multiqc" },
     { name = "nf-core" },
     { name = "pre-commit", specifier = ">=3.0" },
     { name = "pytest", specifier = ">=7.0" },
