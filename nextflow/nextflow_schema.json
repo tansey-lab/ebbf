@@ -10,7 +10,7 @@
             "type": "object",
             "fa_icon": "fas fa-terminal",
             "description": "Define where the pipeline should find input data and save output data.",
-            "required": ["input", "outdir"],
+            "required": ["input", "outdir", "tissue_boundaries"],
             "properties": {
                 "input": {
                     "type": "string",
@@ -28,6 +28,14 @@
                     "format": "directory-path",
                     "description": "The output directory where the results will be saved. You have to use absolute paths to storage on Cloud infrastructure.",
                     "fa_icon": "fas fa-folder-open"
+                },
+                "tissue_boundaries": {
+                    "type": "string",
+                    "format": "file-path",
+                    "exists": true,
+                    "description": "Path to a vector file containing tissue boundary polygons (shapefile, GeoJSON, or geoparquet).",
+                    "help_text": "Required. Passed to ebbf-preprocess as --shapefile. Any geopandas-readable vector format is accepted. Used to restrict sampling to tissue regions.",
+                    "fa_icon": "fas fa-draw-polygon"
                 },
                 "email": {
                     "type": "string",

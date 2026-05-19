@@ -44,7 +44,10 @@ workflow EBBF {
         ch_transcripts = ch_samplesheet
             .map { meta, zarr_dir -> [ meta, file("${params.preprocess_dir}/transcripts.parquet") ] }
     } else {
-        EBBF_PREPROCESS(ch_samplesheet)
+        def tissue_boundaries_file = file(params.tissue_boundaries, checkIfExists: true)
+        ch_preprocess_input = ch_samplesheet
+            .map { meta, zarr_dir -> [ meta, zarr_dir, tissue_boundaries_file ] }
+        EBBF_PREPROCESS(ch_preprocess_input)
         ch_versions = ch_versions.mix(EBBF_PREPROCESS.out.versions.first())
         ch_dataset = EBBF_PREPROCESS.out.dataset
         ch_transcripts = EBBF_PREPROCESS.out.transcripts

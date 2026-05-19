@@ -3,7 +3,7 @@ process EBBF_PREPROCESS {
     label 'process_medium'
 
     input:
-    tuple val(meta), path(zarr_dir)
+    tuple val(meta), path(zarr_dir), path(tissue_boundaries)
 
     output:
     tuple val(meta), path("stdata.npz"), emit: dataset
@@ -21,6 +21,7 @@ process EBBF_PREPROCESS {
         --zarr_dir ${zarr_dir} \\
         --output stdata.npz \\
         --transcripts_output transcripts.parquet \\
+        --shapefile ${tissue_boundaries} \\
         ${args}
 
     cat <<-END_VERSIONS > versions.yml
