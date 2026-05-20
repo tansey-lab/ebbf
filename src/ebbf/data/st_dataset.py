@@ -200,6 +200,12 @@ def process_batch(batch):
     nuclear_tx_gene_idx = np.vectorize(_gene2idx.get)(nuc_genes[mask])
     nuclear_tx_nuc_idx = np.vectorize(_cell_id2idx.get)(nuc_cell_ids[mask])
 
+    ## Drop transcripts assigned to nuclei that were filtered out upstream
+    ## (e.g. centroid outside the tissue polygon).
+    kept = nuclear_tx_nuc_idx != None  # noqa: E711
+    nuclear_tx_gene_idx = nuclear_tx_gene_idx[kept].astype(np.int64)
+    nuclear_tx_nuc_idx = nuclear_tx_nuc_idx[kept].astype(np.int64)
+
     local_nuc_gene_counts = coo_array(
         (np.ones_like(nuclear_tx_gene_idx), (nuclear_tx_nuc_idx, nuclear_tx_gene_idx)),
         shape=(_n_nucs, _n_genes),
@@ -285,28 +291,6 @@ def _compute_boxes_from_bounds(
     return boxes
 
 
-def _load_tissue_polygon(shapefile_path: str):
-    """Load a tissue mask from any geopandas-readable vector file and return its
-    unioned shapely (Multi)Polygon."""
-    gdf = gpd.read_file(shapefile_path)
-    if len(gdf) == 0:
-        raise ValueError(f"Tissue boundaries file {shapefile_path} contains no geometries")
-    polygon = shapely.unary_union(gdf.geometry.values)
-    if polygon.is_empty:
-        raise ValueError(f"Tissue boundaries file {shapefile_path} produced an empty union")
-    return polygon
-
-
-def _filter_boxes_by_tissue(boxes: np.ndarray, tissue_polygon) -> np.ndarray:
-    """Keep only boxes (xmin, ymin, xmax, ymax) whose extent intersects the tissue polygon."""
-    if len(boxes) == 0:
-        return boxes
-    prepared = shapely.prepared.prep(tissue_polygon)
-    box_polys = [shapely.geometry.box(*b) for b in boxes]
-    keep = np.array([prepared.intersects(p) for p in box_polys], dtype=bool)
-    return boxes[keep]
-
-
 def _compute_polygon_triangulation(polygons):
     all_triangles = shapely.constrained_delaunay_triangles(polygons)
 
@@ -326,15 +310,33 @@ def _compute_polygon_triangulation(polygons):
     return (all_triangle_xy, all_triangle_probs)
 
 
-def process_zarr(
+def load_nucleus_centroids(zarr_dir: str, input_format: str | None = None) -> np.ndarray:
+    """Load just the nucleus shapes from a vendor input dir and return centroids
+    as an (N, 2) array. Used by the CLI to derive a tissue mask via DBSCAN before
+    calling :func:`build_stdataset`.
+    """
+    if input_format is None:
+        input_format = detect_input_format(zarr_dir)
+    elif input_format not in ("spatialdata", "xenium"):
+        raise ValueError(f"Unknown input_format: {input_format}")
+
+    if input_format == "xenium":
+        _, nucs, _, _ = _load_xenium_data(zarr_dir)
+    else:
+        _, nucs, _, _ = _load_spatialdata(zarr_dir)
+    _, _, _, c = approximate_ellipse(nucs.geometry.values)
+    return c
+
+
+def build_stdataset(
     zarr_dir: str,
     box_width: float = 400,
     nuc_density_per_um2: float = 1e-5,
     input_format: str | None = None,
-    shapefile: str | None = None,
+    tissue_polygon=None,
 ):
     """
-    Process spatial transcriptomics data into an STDataset object.
+    Build an STDataset from a vendor input directory.
 
     Supports both SpatialData zarr directories and Xenium Ranger output directories.
     Creates a uniform grid of tiles over the slide area and keeps any tile that
@@ -349,6 +351,10 @@ def process_zarr(
         nuc_density_per_um2: Minimum nucleus density to keep a tile (default: 1e-5)
         input_format: Input format, either "spatialdata" or "xenium".
             If None, will auto-detect based on directory contents.
+        tissue_polygon: Optional shapely (Multi)Polygon. When supplied, nuclei
+            whose centroid falls outside the polygon are dropped before
+            gene-count computation, so the resulting STDataset contains only
+            in-tissue data.
     """
     num_workers = get_num_cpus()
 
@@ -384,8 +390,26 @@ def process_zarr(
 
     ## Process nucleus shapes
     nuc_cell_id = nucs.index.values
-    cell_id2idx = {x: i for i, x in enumerate(nuc_cell_id)}
     S, _, _, c = approximate_ellipse(nucs.geometry.values)
+
+    ## Drop nuclei whose centroids fall outside the tissue polygon. Doing this
+    ## before gene counting means the resulting count matrix is already in the
+    ## filtered nucleus index space.
+    if tissue_polygon is not None:
+        keep = shapely.contains_xy(tissue_polygon, c[:, 0], c[:, 1])
+        n_before = len(nuc_cell_id)
+        nuc_cell_id = nuc_cell_id[keep]
+        c = c[keep]
+        S = S[keep]
+        nucs = nucs.loc[nuc_cell_id]
+        logger.info("Tissue polygon filter: kept %d / %d nuclei", len(nuc_cell_id), n_before)
+        if len(nuc_cell_id) == 0:
+            raise ValueError(
+                "No nuclei centroids fall inside the tissue polygon. "
+                "Check that the polygon is in the same coordinate system as the data."
+            )
+
+    cell_id2idx = {x: i for i, x in enumerate(nuc_cell_id)}
 
     ## Process cell shapes (optional)
     if cells is not None:
@@ -439,24 +463,6 @@ def process_zarr(
         nuc_density_per_um2,
     )
 
-    ## Restrict to tissue boundary, if supplied
-    tissue_polygon = None
-    if shapefile is not None:
-        tissue_polygon = _load_tissue_polygon(shapefile)
-        n_before = len(boxes)
-        boxes = _filter_boxes_by_tissue(boxes, tissue_polygon)
-        logger.info(
-            "Tissue boundary filter: kept %d / %d tiles intersecting %s",
-            len(boxes),
-            n_before,
-            shapefile,
-        )
-        if len(boxes) == 0:
-            raise ValueError(
-                f"No sampling tiles intersect tissue boundary {shapefile}. "
-                "Check that the boundary file is in the same coordinate system as the data."
-            )
-
     ## Finalize stats
     nuc_total_tx_counts = nuc_gene_counts.sum(axis=1)
     nuc_gene_counts: coo_array = nuc_gene_counts.tocoo()
@@ -464,14 +470,8 @@ def process_zarr(
     # No cell types - set all to 0
     nuc_ctype_idx = np.zeros(len(nuc_cell_id), dtype=np.int64)
 
-    extra_kwargs = {}
-    if tissue_polygon is not None:
-        extra_kwargs["tissue_polygon_wkb"] = np.frombuffer(
-            shapely.to_wkb(tissue_polygon), dtype=np.uint8
-        )
     stdata = STDataset(
         boxes=boxes,
-        **extra_kwargs,
         nuc_cell_id=nuc_cell_id,
         nuc_total_tx_counts=nuc_total_tx_counts,
         nuc_ctype_idx=nuc_ctype_idx,
@@ -578,12 +578,6 @@ class STDataset:
         # Always use zeros for cell types (no cell type info)
         nuc2ctypes = np.zeros_like(self.nuc_ctype_idx)
 
-        # Deserialize tissue polygon if present so the sampler can constrain patches
-        tissue_polygon = None
-        wkb = getattr(self, "tissue_polygon_wkb", None)
-        if isinstance(wkb, np.ndarray) and wkb.dtype == np.uint8 and wkb.ndim == 1 and wkb.size > 0:
-            tissue_polygon = shapely.from_wkb(wkb.tobytes())
-
         dataset = NuclearPatchDataset(
             nuc2xy=self.nuc_xy,
             nuc2total_gene_count=self.nuc_total_tx_counts,
@@ -604,6 +598,5 @@ class STDataset:
             cell_triangle_probs=(
                 self.cell_triangle_probs if self.cell_triangle_probs.shape[0] > 0 else None
             ),
-            tissue_polygon=tissue_polygon,
         )
         return dataset

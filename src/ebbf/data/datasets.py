@@ -31,30 +31,11 @@ class NuclearPatchDataset(Dataset):
         cell_triangle_num: np.ndarray | None = None,
         cell_triangle_xy: np.ndarray | None = None,
         cell_triangle_probs: np.ndarray | None = None,
-        tissue_polygon=None,
     ):
 
         # Compute bounds directly from nuclei positions
         self.data_min = torch.from_numpy(nuc2xy.min(axis=0)).float()
         self.data_max = torch.from_numpy(nuc2xy.max(axis=0)).float()
-
-        if tissue_polygon is not None:
-            import shapely.prepared
-
-            self.tissue_polygon = tissue_polygon
-            self._tissue_prepared = shapely.prepared.prep(tissue_polygon)
-            # Tighten sampling bounds to the polygon bbox so accept/reject doesn't
-            # waste cycles outside the tissue extent.
-            tx_min, ty_min, tx_max, ty_max = tissue_polygon.bounds
-            self.data_min = torch.maximum(
-                self.data_min, torch.tensor([tx_min, ty_min], dtype=torch.float32)
-            )
-            self.data_max = torch.minimum(
-                self.data_max, torch.tensor([tx_max, ty_max], dtype=torch.float32)
-            )
-        else:
-            self.tissue_polygon = None
-            self._tissue_prepared = None
 
         self.nuc2gene_probs = TorchCSR(nuc2gene_probs)
         self.n_genes: int = nuc2gene_probs.shape[1]
@@ -120,15 +101,6 @@ class NuclearPatchDataset(Dataset):
             ## Sample the center of the patch within data bounds
             patch_center = torch.rand(1, 2)
             patch_center = (self.data_max - self.data_min) * patch_center + self.data_min
-
-            ## Restrict to tissue boundary, if supplied
-            if self._tissue_prepared is not None:
-                from shapely.geometry import Point
-
-                if not self._tissue_prepared.contains(
-                    Point(patch_center[0, 0].item(), patch_center[0, 1].item())
-                ):
-                    continue
 
             idx = self.rtree.lookup_center_radius(
                 x_center=patch_center[0, 0].item(),
