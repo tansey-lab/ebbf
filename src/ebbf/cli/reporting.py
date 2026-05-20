@@ -50,6 +50,12 @@ def main():
         help="Size of each boundary visualization patch in microns (default: 500)",
     )
     parser.add_argument(
+        "--ebbf_unfiltered",
+        type=str,
+        default=None,
+        help="Path to ebbf.unfiltered.h5ad (enables the unfiltered de novo plot)",
+    )
+    parser.add_argument(
         "--stdata",
         type=str,
         default=None,
@@ -66,4 +72,5 @@ def main():
         ebbf_boundaries_fname=args.ebbf_boundaries,
         viz_patch_size=args.viz_patch_size,
         stdata_fname=args.stdata,
+        unfiltered_anndata_fname=args.ebbf_unfiltered,
     )

@@ -10,7 +10,7 @@ import os
 import pandas as pd
 import polars as pl
 
-from ebbf.data.st_dataset import process_zarr
+from ebbf.data.st_dataset import build_stdataset
 from ebbf.utils import compute_polygons
 
 if __name__ == "__main__":
@@ -51,5 +51,5 @@ if __name__ == "__main__":
     tx_df.sink_parquet(points_fname)
 
     # Process the zarr directory
-    stdata = process_zarr(zarr_dir=zarr_dir)
+    stdata, _, _ = build_stdataset(zarr_dir=zarr_dir)
     stdata.save(os.path.join(output_folder, "stdata.npz"))

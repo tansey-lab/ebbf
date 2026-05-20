@@ -39,4 +39,3 @@ dependencies:
   - pip:
       - datasets # Hugging Face datasets
       - torchdiffeq # ODE solvers for PyTorch
-      - multiqc # QC report aggregation

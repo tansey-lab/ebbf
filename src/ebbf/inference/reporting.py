@@ -2051,6 +2051,120 @@ cv.addEventListener("wheel", e => {
     logger.info("Saved ellipse/cluster viz to %s", out_path)
 
 
+def generate_unfiltered_denovo_plot(
+    unfiltered_anndata_fname: str,
+    xenium_boundaries_gdf,
+    output_dir: str,
+    output_filename: str = "denovo_cells_choropleth.pdf",
+) -> Path | None:
+    """Plot input Xenium cell boundaries with de-novo centroids colored by
+    log1p(n_tx), plus an n_tx histogram with a vertical red line at the de-novo
+    tx cutoff.
+    """
+    import anndata as ad
+    import geopandas as gpd
+    from matplotlib.colors import Normalize
+
+    out_path = Path(output_dir) / output_filename
+    adata = ad.read_h5ad(unfiltered_anndata_fname)
+    obs = adata.obs.copy()
+
+    original_shapes = xenium_boundaries_gdf
+
+    denovo = obs.loc[obs["cell_category"].eq("denovo")].copy()
+    if denovo.empty:
+        logger.info("No de novo cells in unfiltered AnnData; skipping plot.")
+        return None
+
+    denovo_gdf = gpd.GeoDataFrame(
+        denovo,
+        geometry=gpd.points_from_xy(denovo["x_centroid"], denovo["y_centroid"]),
+        crs=None,
+    )
+    denovo_gdf["log1p_n_tx"] = np.log1p(denovo_gdf["n_tx"])
+
+    tx_threshold = adata.uns.get("denovo_tx_threshold")
+
+    fig, (ax, hist_ax) = plt.subplots(
+        2,
+        1,
+        figsize=(13, 14),
+        gridspec_kw={"height_ratios": [5.0, 1.15]},
+        constrained_layout=True,
+    )
+
+    if not original_shapes.empty:
+        original_shapes.plot(
+            ax=ax,
+            color="#c7cbd1",
+            edgecolor="#9aa0a8",
+            linewidth=0.12,
+            alpha=0.75,
+            zorder=1,
+        )
+
+    norm = Normalize(
+        vmin=float(denovo_gdf["log1p_n_tx"].min()),
+        vmax=float(denovo_gdf["log1p_n_tx"].max()),
+    )
+    denovo_gdf.plot(
+        ax=ax,
+        column="log1p_n_tx",
+        cmap="viridis",
+        norm=norm,
+        marker="o",
+        markersize=3,
+        edgecolor="black",
+        linewidth=0.03,
+        alpha=0.82,
+        legend=True,
+        legend_kwds={"label": "log1p(number of transcripts)", "shrink": 0.65},
+        zorder=2,
+    )
+
+    ax.set_aspect("equal")
+    ax.invert_yaxis()
+    ax.set_axis_off()
+    ax.set_title(
+        "Unfiltered EBBF: de novo cells colored by log transcript count",
+        fontsize=14,
+        pad=12,
+    )
+
+    hist_ax.hist(
+        denovo_gdf["n_tx"],
+        bins=80,
+        color="#4c78a8",
+        edgecolor="white",
+        linewidth=0.35,
+    )
+    hist_ax.set_xlabel("Number of transcripts (n_tx)")
+    hist_ax.set_ylabel("Cells")
+    hist_ax.set_title("n_tx distribution for de novo cells", fontsize=11, pad=8)
+    hist_ax.spines["top"].set_visible(False)
+    hist_ax.spines["right"].set_visible(False)
+    hist_ax.grid(axis="y", color="#d8dde3", linewidth=0.6, alpha=0.8)
+
+    if tx_threshold is not None and float(tx_threshold) > 0:
+        hist_ax.axvline(
+            float(tx_threshold),
+            color="red",
+            linewidth=1.5,
+            label=f"tx cutoff = {float(tx_threshold):.1f}",
+        )
+        hist_ax.legend(loc="upper right", frameon=False)
+
+    fig.savefig(out_path, format="pdf", dpi=300)
+    plt.close(fig)
+    logger.info(
+        "Wrote %s (original shapes: %d, de novo markers: %d)",
+        out_path,
+        len(original_shapes),
+        len(denovo_gdf),
+    )
+    return out_path
+
+
 def reporting(
     anndata_fname: str,
     xenium_dir: str,
@@ -2060,6 +2174,7 @@ def reporting(
     ebbf_boundaries_fname: str | None = None,
     viz_patch_size: float = 500.0,
     stdata_fname: str | None = None,
+    unfiltered_anndata_fname: str | None = None,
 ):
     """
     Generate all reports comparing EBBF vs default segmentation.
@@ -2141,6 +2256,17 @@ def reporting(
     # Step 5: Morphology report
     logger.info("Step 5: generating morphology report...")
     generate_morphology_report(adata_ebbf, adata_default, xenium_dir, output_dir)
+
+    # Step 5c: Unfiltered de novo plot (requires unfiltered h5ad)
+    if unfiltered_anndata_fname is not None:
+        logger.info("Step 5c: generating unfiltered de novo plot...")
+        generate_unfiltered_denovo_plot(
+            unfiltered_anndata_fname=unfiltered_anndata_fname,
+            xenium_boundaries_gdf=sd.shapes["cell_boundaries"],
+            output_dir=output_dir,
+        )
+    else:
+        logger.info("Step 5c: skipping unfiltered de novo plot (requires --ebbf_unfiltered)")
 
     # Step 6: Ellipse / cluster centroid interactive viz
     if stdata_fname is not None:

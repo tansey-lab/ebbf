@@ -43,7 +43,6 @@ workflow NFCORE_EBBF {
 
     emit:
     postprocess_results = EBBF.out.postprocess_results
-    multiqc_report      = EBBF.out.multiqc_report
 }
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -84,8 +83,7 @@ workflow {
         params.plaintext_email,
         params.outdir,
         params.monochrome_logs,
-        params.hook_url,
-        NFCORE_EBBF.out.multiqc_report
+        params.hook_url
     )
 }
 

@@ -3,9 +3,11 @@ import logging
 import os
 
 import numpy as np
-import polars as pl
+import pyarrow.dataset as pa_ds
+import pyarrow.parquet as pq
+import shapely
 
-from ebbf.data.st_dataset import process_zarr
+from ebbf.data.st_dataset import build_stdataset, load_nucleus_centroids
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +105,16 @@ def load_tissue_mask(shapefile_path: str):
     gdf = gpd.read_file(shapefile_path)
     logger.info("Loaded tissue mask from %s (%d geometries)", shapefile_path, len(gdf))
     return gdf
+
+
+def _polygon_from_mask_gdf(mask_gdf, source_desc: str):
+    """Union the geometries of a tissue mask GeoDataFrame into a single (Multi)Polygon."""
+    if len(mask_gdf) == 0:
+        raise ValueError(f"Tissue mask from {source_desc} contains no geometries")
+    polygon = shapely.unary_union(mask_gdf.geometry.values)
+    if polygon.is_empty:
+        raise ValueError(f"Tissue mask from {source_desc} produced an empty union")
+    return polygon
 
 
 def plot_tissue_mask(
@@ -304,16 +316,33 @@ def main():
     )
     args = parser.parse_args()
 
-    stdata, points_folder, column_mapping = process_zarr(
+    plot_dir = os.path.join(os.path.dirname(os.path.abspath(args.output)), "plots")
+    os.makedirs(plot_dir, exist_ok=True)
+
+    ## Build the tissue polygon up-front so build_stdataset can drop out-of-tissue
+    ## nuclei and we can filter the transcripts parquet by the same polygon.
+    if args.shapefile is not None:
+        mask_gdf = load_tissue_mask(args.shapefile)
+        tissue_polygon = _polygon_from_mask_gdf(mask_gdf, args.shapefile)
+    else:
+        centroids = load_nucleus_centroids(args.zarr_dir, input_format=args.input_format)
+        mask_gdf, _ = build_tissue_mask_from_centroids(
+            nuc_xy=centroids,
+            eps=args.tissue_mask_dbscan_eps,
+            min_samples=args.tissue_mask_dbscan_min_samples,
+        )
+        mask_gdf.to_parquet(os.path.join(plot_dir, "tissue_mask.parquet"))
+        tissue_polygon = _polygon_from_mask_gdf(mask_gdf, "DBSCAN")
+
+    stdata, points_folder, column_mapping = build_stdataset(
         zarr_dir=args.zarr_dir,
         box_width=args.box_width,
         input_format=args.input_format,
-        shapefile=args.shapefile,
+        tissue_polygon=tissue_polygon,
     )
     stdata.save(args.output)
     logger.info("Saved STDataset to %s", args.output)
 
-    plot_dir = os.path.join(os.path.dirname(os.path.abspath(args.output)), "plots")
     plot_nuclear_ellipses(
         nuc_xy=stdata.nuc_xy,
         nuc_ellipse_mat=stdata.nuc_ellipse_mat,
@@ -322,16 +351,6 @@ def main():
         nuc_cell_id=stdata.nuc_cell_id,
         geoparquet_path=os.path.join(plot_dir, "nuclear_ellipses.parquet"),
     )
-    os.makedirs(plot_dir, exist_ok=True)
-    if args.shapefile is not None:
-        mask_gdf = load_tissue_mask(args.shapefile)
-    else:
-        mask_gdf, _ = build_tissue_mask_from_centroids(
-            nuc_xy=stdata.nuc_xy,
-            eps=args.tissue_mask_dbscan_eps,
-            min_samples=args.tissue_mask_dbscan_min_samples,
-        )
-        mask_gdf.to_parquet(os.path.join(plot_dir, "tissue_mask.parquet"))
     plot_tissue_mask(
         mask_gdf=mask_gdf,
         nuc_xy=stdata.nuc_xy,
@@ -340,18 +359,70 @@ def main():
 
     write_summary_report(stdata, os.path.join(plot_dir, "report.html"), include_tissue_mask=True)
 
-    # Write out original transcripts with normalized column names for postprocessing
+    ## Write out transcripts with normalized column names, restricted to the
+    ## tissue polygon so post-processing matches the STDataset contents.
     x_col = column_mapping["x"]
     y_col = column_mapping["y"]
-    df = pl.scan_parquet(points_folder)
-    df = df.filter(pl.col("is_gene"))
-    df = df.select(
+    _write_filtered_transcripts(
+        points_folder=points_folder,
+        x_col=x_col,
+        y_col=y_col,
+        tissue_polygon=tissue_polygon,
+        output_path=args.transcripts_output,
+    )
+    logger.info("Saved transcripts to %s", args.transcripts_output)
+
+
+def _write_filtered_transcripts(
+    points_folder: str,
+    x_col: str,
+    y_col: str,
+    tissue_polygon,
+    output_path: str,
+    batch_size: int = 10_000_000,
+):
+    """Stream the transcripts parquet, keep gene rows whose (x, y) lies inside the
+    tissue polygon, and write to ``output_path`` with normalized column names."""
+    import pyarrow as pa
+
+    dataset = pa_ds.dataset(points_folder, format="parquet")
+    writer = None
+    out_schema = pa.schema(
         [
-            pl.col("transcript_id"),
-            pl.col(x_col).alias("x"),
-            pl.col(y_col).alias("y"),
-            pl.col("overlaps_nucleus"),
+            ("transcript_id", dataset.schema.field("transcript_id").type),
+            ("x", pa.float64()),
+            ("y", pa.float64()),
+            ("overlaps_nucleus", dataset.schema.field("overlaps_nucleus").type),
         ]
     )
-    df.sink_parquet(args.transcripts_output)
-    logger.info("Saved transcripts to %s", args.transcripts_output)
+    try:
+        n_kept = 0
+        n_total = 0
+        for batch in dataset.to_batches(
+            batch_size=batch_size,
+            columns=["transcript_id", x_col, y_col, "overlaps_nucleus", "is_gene"],
+            filter=(pa_ds.field("is_gene")),
+        ):
+            x = np.asarray(batch.column(x_col), dtype=np.float64)
+            y = np.asarray(batch.column(y_col), dtype=np.float64)
+            mask = shapely.contains_xy(tissue_polygon, x, y)
+            n_total += len(mask)
+            if not mask.any():
+                continue
+            kept = pa.RecordBatch.from_arrays(
+                [
+                    batch.column("transcript_id").filter(pa.array(mask)),
+                    pa.array(x[mask]),
+                    pa.array(y[mask]),
+                    batch.column("overlaps_nucleus").filter(pa.array(mask)),
+                ],
+                names=["transcript_id", "x", "y", "overlaps_nucleus"],
+            )
+            n_kept += kept.num_rows
+            if writer is None:
+                writer = pq.ParquetWriter(output_path, out_schema)
+            writer.write_batch(kept)
+        logger.info("Transcript tissue filter: kept %d / %d gene transcripts", n_kept, n_total)
+    finally:
+        if writer is not None:
+            writer.close()
