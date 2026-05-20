@@ -11,11 +11,8 @@ include { EBBF_POSTPROCESS_MAP      } from '../modules/local/postprocess'
 include { EBBF_POSTPROCESS_MERGE    } from '../modules/local/postprocess'
 include { EBBF_BOUNDARIES           } from '../modules/local/boundaries'
 include { EBBF_REPORTING            } from '../modules/local/reporting'
-include { MULTIQC                   } from '../modules/nf-core/multiqc/main'
 include { paramsSummaryMap          } from 'plugin/nf-schema'
-include { paramsSummaryMultiqc      } from '../subworkflows/nf-core/utils_nfcore_pipeline'
 include { softwareVersionsToYAML    } from '../subworkflows/nf-core/utils_nfcore_pipeline'
-include { methodsDescriptionText    } from '../subworkflows/local/utils_nfcore_ebbf_pipeline'
 
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -31,7 +28,6 @@ workflow EBBF {
     main:
 
     ch_versions = channel.empty()
-    ch_multiqc_files = channel.empty()
 
     //
     // STEP 1: Preprocess - Convert zarr to TMA format
@@ -207,58 +203,14 @@ workflow EBBF {
         .mix(topic_versions_string)
         .collectFile(
             storeDir: "${params.outdir}/pipeline_info",
-            name: 'nf_core_'  +  'ebbf_software_'  + 'mqc_'  + 'versions.yml',
+            name: 'nf_core_ebbf_software_versions.yml',
             sort: true,
             newLine: true
-        ).set { ch_collated_versions }
-
-
-    //
-    // MODULE: MultiQC
-    //
-    ch_multiqc_config        = channel.fromPath(
-        "$projectDir/assets/multiqc_config.yml", checkIfExists: true)
-    ch_multiqc_custom_config = params.multiqc_config ?
-        channel.fromPath(params.multiqc_config, checkIfExists: true) :
-        channel.empty()
-    ch_multiqc_logo          = params.multiqc_logo ?
-        channel.fromPath(params.multiqc_logo, checkIfExists: true) :
-        channel.empty()
-
-    summary_params      = paramsSummaryMap(
-        workflow, parameters_schema: "nextflow_schema.json")
-    ch_workflow_summary = channel.value(paramsSummaryMultiqc(summary_params))
-    ch_multiqc_files = ch_multiqc_files.mix(
-        ch_workflow_summary.collectFile(name: 'workflow_summary_mqc.yaml'))
-    ch_multiqc_custom_methods_description = params.multiqc_methods_description ?
-        file(params.multiqc_methods_description, checkIfExists: true) :
-        file("$projectDir/assets/methods_description_template.yml", checkIfExists: true)
-    ch_methods_description                = channel.value(
-        methodsDescriptionText(ch_multiqc_custom_methods_description))
-
-    ch_multiqc_files = ch_multiqc_files.mix(ch_collated_versions)
-    ch_multiqc_files = ch_multiqc_files.mix(
-        EBBF_POSTPROCESS_MERGE.out.denovo_filter_mqc.map { _meta, report -> report })
-    ch_multiqc_files = ch_multiqc_files.mix(
-        ch_methods_description.collectFile(
-            name: 'methods_description_mqc.yaml',
-            sort: true
         )
-    )
-
-    MULTIQC (
-        ch_multiqc_files.collect(),
-        ch_multiqc_config.toList(),
-        ch_multiqc_custom_config.toList(),
-        ch_multiqc_logo.toList(),
-        [],
-        []
-    )
 
     emit:
     postprocess_results = EBBF_POSTPROCESS_MERGE.out.results
     reports             = params.reporting ? EBBF_REPORTING.out.reports : channel.empty()
-    multiqc_report      = MULTIQC.out.report.toList()
     versions            = ch_versions
 
 }

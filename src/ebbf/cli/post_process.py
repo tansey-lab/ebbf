@@ -31,18 +31,9 @@ def _add_denovo_filter_args(parser: argparse.ArgumentParser):
         type=float,
         default=25.0,
         help=(
-            "Drop de novo and split cells with transcript counts below this"
+            "Drop de novo cells with transcript counts below this"
             " percentile of input cell transcript counts (default: 25.0;"
             " set 0 to disable)"
-        ),
-    )
-    parser.add_argument(
-        "--denovo_min_area_pctile",
-        type=float,
-        default=5.0,
-        help=(
-            "Drop de novo and split cells with convex-hull area below this"
-            " percentile of input cell areas (default: 5.0; set 0 to disable)"
         ),
     )
     parser.add_argument(
@@ -51,19 +42,9 @@ def _add_denovo_filter_args(parser: argparse.ArgumentParser):
         default=None,
         help=(
             "Path to write a per-cluster filter report parquet covering de novo"
-            " and split clusters (columns: ef_cluster_id, cell_type, n_tx, area,"
-            " thresholds, pass flags, kept). Defaults to"
+            " clusters (columns: ef_cluster_id, cell_type, n_tx,"
+            " threshold, pass flag, kept). Defaults to"
             " '<anndata_output stem>.denovo_filter_report.parquet'."
-        ),
-    )
-    parser.add_argument(
-        "--denovo_filter_mqc",
-        type=str,
-        default=None,
-        help=(
-            "Path to write a MultiQC custom-content HTML summary of the de novo"
-            " + split filter. Defaults to"
-            " '<anndata_output stem>.denovo_filter_mqc.html'."
         ),
     )
 
@@ -89,12 +70,6 @@ def main():
         type=str,
         default="ef.h5ad",
         help="Output AnnData file path (default: ef.h5ad).",
-    )
-    parser_full.add_argument(
-        "--cd_cutoff",
-        type=float,
-        default=2.0,
-        help="Centroid distance cutoff for AnnData filtering (default: 2.0)",
     )
     parser_full.add_argument(
         "--original_transcripts",
@@ -167,12 +142,6 @@ def main():
         help="Output AnnData file path (default: ef.h5ad).",
     )
     parser_merge.add_argument(
-        "--cd_cutoff",
-        type=float,
-        default=2.0,
-        help="Centroid distance cutoff for AnnData filtering (default: 2.0)",
-    )
-    parser_merge.add_argument(
         "--original_transcripts",
         type=str,
         default=None,
@@ -201,13 +170,10 @@ def main():
             cluster_distance=args.cluster_distance,
             output_fname=args.output,
             anndata_fname=anndata_fname,
-            cd_cutoff=args.cd_cutoff,
             original_tx_fname=args.original_transcripts,
             n_workers=args.n_workers,
             denovo_min_tx_pctile=args.denovo_min_tx_pctile,
-            denovo_min_area_pctile=args.denovo_min_area_pctile,
             denovo_filter_report_fname=args.denovo_filter_report,
-            denovo_filter_mqc_fname=args.denovo_filter_mqc,
         )
     elif args.command == "prepare":
         post_process_prepare(
@@ -235,12 +201,9 @@ def main():
             dataset=stdata,
             output_fname=args.output,
             anndata_fname=anndata_fname,
-            cd_cutoff=args.cd_cutoff,
             original_tx_fname=args.original_transcripts,
             noise_meta_fname=args.noise_meta,
             work_dir=args.work_dir,
             denovo_min_tx_pctile=args.denovo_min_tx_pctile,
-            denovo_min_area_pctile=args.denovo_min_area_pctile,
             denovo_filter_report_fname=args.denovo_filter_report,
-            denovo_filter_mqc_fname=args.denovo_filter_mqc,
         )

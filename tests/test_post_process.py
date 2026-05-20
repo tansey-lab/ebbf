@@ -5,12 +5,14 @@ import polars as pl
 import pyarrow.dataset as ds
 import pytest
 
+from ebbf.data.st_dataset import STDataset
 from ebbf.inference.post_process import (
     ck_decode_cluster_id,
     ck_decode_grid_version,
     ck_decode_super_grid_label,
     ck_encode,
     compute_cluster_to_cell_mapping,
+    create_anndata,
     double_grid_and_group,
     map_clusters_to_cells,
 )
@@ -369,3 +371,68 @@ class TestComputeClusterToCellMapping:
 
         np.testing.assert_allclose(out["mahalanobis_distance"].to_numpy(), [1.0, 0.1])
         assert out["cell_id"].to_list() == [0, 1]
+
+
+def test_create_anndata_classifies_only_by_mahalanobis_distance(tmp_path):
+    """High centroid distance no longer creates a split cell category."""
+    tx_path = tmp_path / "ef.parquet"
+    output_path = tmp_path / "ef.h5ad"
+
+    pl.DataFrame(
+        {
+            "transcript_id": np.arange(6, dtype=np.uint64),
+            "feature_name": ["GeneA", "GeneA", "GeneB", "GeneB", "GeneA", "GeneB"],
+            "cell_id": [10, 10, 10, 10, 20, 20],
+            "x": [0.0, 0.2, 1.0, 1.2, 5.0, 5.2],
+            "y": [0.0, 0.1, 1.0, 1.1, 5.0, 5.2],
+            "x_initial": [0.0, 0.2, 1.0, 1.2, 5.0, 5.2],
+            "y_initial": [0.0, 0.1, 1.0, 1.1, 5.0, 5.2],
+            "centroid_distance": [0.1, 0.1, 99.0, 99.0, 2.0, 2.0],
+            "mahalanobis_distance": [0.5, 0.5, 0.8, 0.8, 1.2, 1.2],
+            "ef_cluster_id": [1, 1, 2, 2, 3, 3],
+        }
+    ).write_parquet(tx_path)
+
+    dataset = STDataset(
+        boxes=np.array([[0.0, 0.0, 10.0, 10.0]]),
+        nuc_cell_id=np.array([10, 20]),
+        nuc_total_tx_counts=np.array([10, 10]),
+        nuc_ctype_idx=np.array([0, 0]),
+        nuc_cell_counts=np.array([10, 10]),
+        nuc_xy=np.array([[0.0, 0.0], [5.0, 5.0]]),
+        nuc_ellipse_mat=np.tile(np.eye(2), (2, 1, 1)),
+        nuc_countmat_nuc_idx=np.array([], dtype=int),
+        nuc_countmat_gene_idx=np.array([], dtype=int),
+        nuc_countmat_counts=np.array([], dtype=int),
+        genes=np.array(["GeneA", "GeneB"]),
+    )
+
+    adata = create_anndata(
+        ef_tx_fname=str(tx_path),
+        output_fname=str(output_path),
+        dataset=dataset,
+        denovo_min_tx_pctile=0.0,
+    )
+
+    categories = set(adata.obs["cell_category"].tolist())
+    assert categories == {"original", "denovo"}
+    assert "split" not in categories
+    assert "10_split_2" not in adata.obs.index
+    assert adata.obs.loc["10", "cell_category"] == "original"
+    assert adata.obs.loc["denovo_3", "cell_category"] == "denovo"
+
+    report = pl.read_parquet(tmp_path / "ef.denovo_filter_report.parquet")
+    assert report.columns == [
+        "ef_cluster_id",
+        "cell_id",
+        "cell_type",
+        "x",
+        "y",
+        "centroid_distance",
+        "mahalanobis_distance",
+        "n_tx",
+        "tx_threshold",
+        "tx_pctile",
+        "passes_tx_filter",
+        "kept",
+    ]

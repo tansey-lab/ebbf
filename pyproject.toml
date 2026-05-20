@@ -50,7 +50,6 @@ dependencies = [
     "igraph",
     "leidenalg",
     "spatialdata-io",
-    "multiqc",
 ]
 
 [project.optional-dependencies]

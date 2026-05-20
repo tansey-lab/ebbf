@@ -78,14 +78,10 @@ process EBBF_POSTPROCESS_MERGE {
     tuple val(meta), path("ebbf.h5ad"), emit: anndata
     tuple val(meta), path("ebbf.unfiltered.h5ad"), emit: anndata_unfiltered
     tuple val(meta), path("denovo_filter_report.parquet"), emit: denovo_filter_report
-    // multiqc HTML keeps the sample id in its filename — multiqc collects across
-    // samples and identically-named files would collide during staging.
-    tuple val(meta), path("${meta.id}.denovo_filter_mqc.html"), emit: denovo_filter_mqc
     path "versions.yml", emit: versions
 
     script:
     def args = task.ext.args ?: ''
-    def cd_cutoff = params.cd_cutoff ?: 2.0
     def orig_tx_arg = "--original_transcripts ${original_transcripts}"
     def noise_meta_arg = "--noise_meta ${noise_meta}"
     """
@@ -96,8 +92,6 @@ process EBBF_POSTPROCESS_MERGE {
         --output ebbf.parquet \\
         --anndata_output ebbf.h5ad \\
         --denovo_filter_report denovo_filter_report.parquet \\
-        --denovo_filter_mqc ${meta.id}.denovo_filter_mqc.html \\
-        --cd_cutoff ${cd_cutoff} \\
         --work_dir . \\
         ${orig_tx_arg} \\
         ${noise_meta_arg} \\
