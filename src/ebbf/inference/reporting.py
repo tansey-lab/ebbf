@@ -2053,32 +2053,23 @@ cv.addEventListener("wheel", e => {
 
 def generate_unfiltered_denovo_plot(
     unfiltered_anndata_fname: str,
-    ebbf_boundaries_fname: str,
+    xenium_boundaries_gdf,
     output_dir: str,
-    output_filename: str = "unfiltered_denovo_transcripts.pdf",
+    output_filename: str = "denovo_cells_choropleth.pdf",
 ) -> Path | None:
-    """Plot original-cell boundaries with de-novo centroids colored by log1p(n_tx),
-    plus an n_tx histogram with a vertical red line at the de-novo tx cutoff.
+    """Plot input Xenium cell boundaries with de-novo centroids colored by
+    log1p(n_tx), plus an n_tx histogram with a vertical red line at the de-novo
+    tx cutoff.
     """
     import anndata as ad
     import geopandas as gpd
     from matplotlib.colors import Normalize
-    from shapely import from_wkb
 
     out_path = Path(output_dir) / output_filename
     adata = ad.read_h5ad(unfiltered_anndata_fname)
     obs = adata.obs.copy()
-    obs["ef_cluster_id"] = obs["ef_cluster_id"].astype("Int64").astype(str)
 
-    boundaries = pd.read_parquet(ebbf_boundaries_fname)
-    boundaries["ef_cluster_id"] = boundaries["ef_cluster_id"].astype(str)
-    boundaries["geometry"] = from_wkb(boundaries["geometry"].to_numpy())
-    boundaries_gdf = gpd.GeoDataFrame(boundaries, geometry="geometry", crs=None)
-
-    original_obs = obs.loc[obs["cell_category"].eq("original")]
-    original_shapes = boundaries_gdf.merge(
-        original_obs[["ef_cluster_id"]], on="ef_cluster_id", how="inner"
-    )
+    original_shapes = xenium_boundaries_gdf
 
     denovo = obs.loc[obs["cell_category"].eq("denovo")].copy()
     if denovo.empty:
@@ -2266,19 +2257,16 @@ def reporting(
     logger.info("Step 5: generating morphology report...")
     generate_morphology_report(adata_ebbf, adata_default, xenium_dir, output_dir)
 
-    # Step 5c: Unfiltered de novo plot (requires unfiltered h5ad + boundaries)
-    if unfiltered_anndata_fname is not None and ebbf_boundaries_fname is not None:
+    # Step 5c: Unfiltered de novo plot (requires unfiltered h5ad)
+    if unfiltered_anndata_fname is not None:
         logger.info("Step 5c: generating unfiltered de novo plot...")
         generate_unfiltered_denovo_plot(
             unfiltered_anndata_fname=unfiltered_anndata_fname,
-            ebbf_boundaries_fname=ebbf_boundaries_fname,
+            xenium_boundaries_gdf=sd.shapes["cell_boundaries"],
             output_dir=output_dir,
         )
     else:
-        logger.info(
-            "Step 5c: skipping unfiltered de novo plot "
-            "(requires --ebbf_unfiltered and --ebbf_boundaries)"
-        )
+        logger.info("Step 5c: skipping unfiltered de novo plot (requires --ebbf_unfiltered)")
 
     # Step 6: Ellipse / cluster centroid interactive viz
     if stdata_fname is not None:
