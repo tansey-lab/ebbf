@@ -197,8 +197,10 @@ def process_batch(batch):
             "num": num,
         }
 
-    nuclear_tx_gene_idx = np.vectorize(_gene2idx.get)(nuc_genes[mask])
-    nuclear_tx_nuc_idx = np.vectorize(_cell_id2idx.get)(nuc_cell_ids[mask])
+    ## Use otypes=[object] so missing cell_ids (filtered-out nuclei) come back as
+    ## None rather than tripping the dtype inference that np.vectorize defaults to.
+    nuclear_tx_gene_idx = np.vectorize(_gene2idx.get, otypes=[object])(nuc_genes[mask])
+    nuclear_tx_nuc_idx = np.vectorize(_cell_id2idx.get, otypes=[object])(nuc_cell_ids[mask])
 
     ## Drop transcripts assigned to nuclei that were filtered out upstream
     ## (e.g. centroid outside the tissue polygon).
