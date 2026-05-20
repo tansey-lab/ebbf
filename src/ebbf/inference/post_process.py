@@ -1165,6 +1165,9 @@ def create_anndata(
     adata.obs["passes_tx_filter"] = adata.obs.index.map(_passes_tx_for).astype(bool)
     adata.obs["kept"] = adata.obs.index.map(_kept_for).astype(bool)
 
+    adata.uns["denovo_tx_threshold"] = float(tx_threshold)
+    adata.uns["denovo_tx_pctile"] = float(denovo_min_tx_pctile)
+
     # Save the pre-filter AnnData alongside the filtered one so downstream
     # consumers can inspect dropped clusters.
     unfiltered_fname = stem + ".unfiltered.h5ad"

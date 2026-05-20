@@ -3,7 +3,7 @@ process EBBF_REPORTING {
     label 'process_high'
 
     input:
-    tuple val(meta), path(anndata_file), path(ebbf_boundaries), path(zarr_dir), path(stdata)
+    tuple val(meta), path(anndata_file), path(anndata_unfiltered), path(ebbf_boundaries), path(zarr_dir), path(stdata)
 
     output:
     tuple val(meta), path("*.html")               , emit: reports
@@ -22,6 +22,7 @@ process EBBF_REPORTING {
         --xenium_dir ${zarr_dir} \\
         --output_dir . \\
         --ebbf_boundaries ${ebbf_boundaries} \\
+        --ebbf_unfiltered ${anndata_unfiltered} \\
         --viz_patch_size ${params.viz_patch_size} \\
         --stdata ${stdata} \\
         ${args}

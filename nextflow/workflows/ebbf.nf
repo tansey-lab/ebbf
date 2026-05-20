@@ -171,6 +171,7 @@ workflow EBBF {
     //
     if (params.reporting) {
         ch_reporting_input = EBBF_POSTPROCESS_MERGE.out.anndata
+            .join(EBBF_POSTPROCESS_MERGE.out.anndata_unfiltered)
             .join(EBBF_BOUNDARIES.out.boundaries)
             .join(ch_samplesheet)
             .join(ch_dataset)
