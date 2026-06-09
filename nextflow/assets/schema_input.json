@@ -18,6 +18,13 @@
                 "format": "directory-path",
                 "exists": true,
                 "errorMessage": "Path to SpatialData zarr directory must be provided"
+            },
+            "model_weights": {
+                "type": "string",
+                "format": "file-path",
+                "exists": true,
+                "errorMessage": "Optional path to a pre-trained .pt checkpoint. When set, training is skipped for this sample and these weights are used directly for inference.",
+                "meta": ["model_weights"]
             }
         },
         "required": ["sample", "zarr_dir"]
