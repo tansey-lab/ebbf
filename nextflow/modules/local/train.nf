@@ -7,7 +7,10 @@ process EBBF_TRAIN {
     maxRetries 10
 
     input:
-    tuple val(meta), path(dataset)
+    // resume_weights is optional: pass [] from the workflow when no weights are
+    // available, or a file path to resume training from. Staged as a fixed
+    // filename so the script body does not depend on the source path.
+    tuple val(meta), path(dataset), path(resume_weights, stageAs: 'provided_weights.pt')
 
     // Stage checkpoint from persistent location before task starts (for retries)
     beforeScript {
@@ -42,19 +45,19 @@ process EBBF_TRAIN {
     def attn_res = params.attn_resolutions.tokenize(',').collect { it.trim() as int }
     def chan_mult = params.channel_mult.tokenize(',').collect { it.trim() as int }
     def wandb_key = params.wandb_api_key ?: ''
-    def model_weights = params.model_weights ?: ''
     """
     mkdir -p model_output
 
-    # Check for checkpoint staged by beforeScript from previous attempt
-    # Priority: prev_checkpoint.pt (retry) > model_weights (user-provided)
+    # Check for checkpoint staged by beforeScript from previous attempt.
+    # Priority: prev_checkpoint.pt (retry) > provided_weights.pt (per-sample
+    # or global --model_weights, staged via the resume_weights input).
     RESUME_FLAG=""
     if [ -f "prev_checkpoint.pt" ]; then
         RESUME_FLAG="--resume_from prev_checkpoint.pt"
         echo "Resuming from staged checkpoint (attempt ${task.attempt})"
-    elif [ -n "${model_weights}" ]; then
-        RESUME_FLAG="--resume_from ${model_weights}"
-        echo "Resuming from provided weights: ${model_weights}"
+    elif [ -f "provided_weights.pt" ]; then
+        RESUME_FLAG="--resume_from provided_weights.pt"
+        echo "Resuming from provided weights"
     fi
 
     # Generate config from params
@@ -128,8 +131,22 @@ EOFCONFIG
         export WANDB_API_KEY="${wandb_key}"
     fi
 
-    # Use consistent run ID across retries so wandb resumes to same run
-    export WANDB_RUN_ID="${workflow.runName}_${meta.id}"
+    # Persist a wandb run ID alongside the checkpoint so retries (which get
+    # fresh work dirs) resume the same wandb run. The nonce is generated at
+    # bash runtime, not Groovy render time, so it does not enter the task
+    # hash — that keeps -resume working across Nextflow invocations.
+    # A fresh Nextflow invocation that actually re-executes this task (cache
+    # miss) will generate a new ID iff no prior run-id file exists; delete
+    # the file under \$CKPT_DIR to force a brand-new wandb run.
+    CKPT_DIR='${params.outdir}/checkpoints/${meta.id}'
+    mkdir -p "\$CKPT_DIR"
+    WANDB_ID_FILE="\$CKPT_DIR/wandb_run_id.txt"
+    if [ -f "\$WANDB_ID_FILE" ]; then
+        export WANDB_RUN_ID="\$(cat "\$WANDB_ID_FILE")"
+    else
+        export WANDB_RUN_ID="${params.experiment_name}_${meta.id}_\$(date +%s)_\$\$"
+        echo "\$WANDB_RUN_ID" > "\$WANDB_ID_FILE"
+    fi
     export WANDB_RESUME="allow"
 
     ebbf-train --config train_config.yaml --dataset ${dataset} --output_dir model_output \$RESUME_FLAG
