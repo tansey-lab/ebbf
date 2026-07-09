@@ -21,7 +21,7 @@ model:
   img_resolution: 128
   in_channels: 64
   model_channels: 128
-  out_channels: 128
+  out_channels: 192
   num_blocks: 2
   attn_resolutions: [32, 16]
   dropout: 0.1
