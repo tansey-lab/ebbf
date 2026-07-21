@@ -42,7 +42,7 @@ workflow NFCORE_EBBF {
     )
 
     emit:
-    postprocess_results = EBBF.out.postprocess_results
+    EBBF.out.postprocess_results
 }
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
@@ -246,7 +247,24 @@ class Trainer:
         }
         torch.save(to_save, os.path.join(self.output_dir, "chkpoint.pt"))
 
-    def train(self, start_epoch: int = 0):
+    def train(self, start_epoch: int = 0, resume_from: str | None = None):
+        # Already trained to max epochs: nothing to do. Re-emit the resumed
+        # checkpoint byte-for-byte (a plain file copy, NOT torch.save) so the
+        # weights output is identical across resumes. Re-serializing here would
+        # change the file and invalidate the downstream inference cache, causing
+        # a completed pipeline to restart inference on every `-resume`.
+        if start_epoch >= self.n_epochs:
+            if self.is_main_process:
+                logger.info(
+                    "Checkpoint already at max epochs (%d); skipping training.",
+                    self.n_epochs,
+                )
+                if resume_from:
+                    dst = os.path.join(self.output_dir, "chkpoint.pt")
+                    if os.path.abspath(resume_from) != os.path.abspath(dst):
+                        shutil.copyfile(resume_from, dst)
+            return
+
         if self.is_main_process:
             logger.info(
                 f"Starting training: {self.n_epochs} epochs (from epoch {start_epoch}), "
@@ -317,7 +335,7 @@ def main_distributed(
         is_distributed=True,
         is_main_process=(rank == 0),
     )
-    trainer.train(start_epoch=start_epoch)
+    trainer.train(start_epoch=start_epoch, resume_from=resume_from)
     destroy_process_group()
 
 
@@ -371,7 +389,7 @@ def main_single(
         is_distributed=False,
         is_main_process=True,
     )
-    trainer.train(start_epoch=start_epoch)
+    trainer.train(start_epoch=start_epoch, resume_from=resume_from)
 
 
 # Keep old name for backwards compatibility

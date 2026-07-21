@@ -235,7 +235,7 @@ def generate_distribution_report(adata_ebbf, adata_default, output_dir):
     data_box = [d_counts, e_counts]
     bp = axes[1, 1].boxplot(
         data_box,
-        labels=["Default", "EBBF"],
+        tick_labels=["Default", "EBBF"],
         widths=0.5,
         patch_artist=True,
         showfliers=False,
@@ -867,7 +867,7 @@ def generate_diff_report(adata_diff, X_diff, genes, shared_ids, output_dir):
     cluster_data = [
         adata_diff.obs.loc[adata_diff.obs["leiden_0.5"] == c, "diff_total"].values for c in clusters
     ]
-    bp = axes[0].boxplot(cluster_data, labels=clusters, showfliers=False, patch_artist=True)
+    bp = axes[0].boxplot(cluster_data, tick_labels=clusters, showfliers=False, patch_artist=True)
     for i, patch in enumerate(bp["boxes"]):
         patch.set_facecolor(plt.cm.tab10(i / max(len(clusters) - 1, 1)))
         patch.set_alpha(0.6)

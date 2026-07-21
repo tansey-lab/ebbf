@@ -3,6 +3,12 @@ process EBBF_INFER {
     label 'process_high'
     label 'process_gpu'
 
+    // No custom shard caching is needed: each worker is its own Nextflow task, so
+    // on `-resume` completed workers are reused from the cache and only failed /
+    // unfinished ones re-run. INFER re-runs wholesale only when its `weights` input
+    // actually changes — which now happens exactly when the model is retrained (see
+    // EBBF_TRAIN's stable run_id and no-op-save handling), never on a plain resume.
+
     input:
     tuple val(meta), path(weights), path(dataset), path(zarr_dir), val(n_workers), val(worker_id)
 
@@ -12,9 +18,8 @@ process EBBF_INFER {
 
     script:
     def args = task.ext.args ?: ''
-    def prefix = task.ext.prefix ?: "${meta.id}"
-    def attn_res = params.attn_resolutions.tokenize(',').collect { it.trim() as int }
-    def chan_mult = params.channel_mult.tokenize(',').collect { it.trim() as int }
+    def attn_res = params.attn_resolutions.tokenize(',').collect { v -> v.trim() as int }
+    def chan_mult = params.channel_mult.tokenize(',').collect { v -> v.trim() as int }
     """
     # Generate config from params
     cat > infer_config.yaml << 'EOFCONFIG'

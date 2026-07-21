@@ -6,34 +6,45 @@ process EBBF_TRAIN {
     errorStrategy 'retry'
     maxRetries 10
 
-    input:
-    // resume_weights is optional: pass [] from the workflow when no weights are
-    // available, or a file path to resume training from. Staged as a fixed
-    // filename so the script body does not depend on the source path.
-    tuple val(meta), path(dataset), path(resume_weights, stageAs: 'provided_weights.pt')
-
     // Stage checkpoint from persistent location before task starts (for retries)
     beforeScript {
         """
         CKPT_SRC='${params.outdir}/checkpoints/${meta.id}/chkpoint.pt'
         if [ -f "\$CKPT_SRC" ]; then
-            cp "\$CKPT_SRC" prev_checkpoint.pt
-            echo "Staged checkpoint from previous attempt"
+            # A checkpoint half-written by a preempted/killed attempt is a truncated
+            # zip with no End-of-Central-Directory record (PK\\x05\\x06). torch.load
+            # then raises "PytorchStreamReader failed ... central directory" and
+            # crashes on EVERY retry — an unrecoverable loop. Validate before staging
+            # (coreutils only, no python: beforeScript runs outside the conda env);
+            # quarantine a corrupt file so training restarts clean and afterScript can
+            # replace it with a good checkpoint.
+            if tail -c 128 "\$CKPT_SRC" | od -An -tx1 | tr -d ' \\n' | grep -q 504b0506; then
+                cp "\$CKPT_SRC" prev_checkpoint.pt
+                echo "Staged checkpoint from previous attempt"
+            else
+                echo "WARNING: persistent checkpoint \$CKPT_SRC is corrupt; quarantining and training from scratch"
+                mv "\$CKPT_SRC" "\$CKPT_SRC.corrupt" || rm -f "\$CKPT_SRC"
+            fi
         fi
         """
     }
 
-    // Save checkpoint to persistent location after each attempt (runs even on failure)
+    // Save checkpoint to persistent location after each attempt (runs even on failure).
+    // Write to a temp file then atomically rename so an interrupted copy can never
+    // leave a truncated checkpoint behind (which would poison every future retry).
     afterScript {
         """
         CKPT_DIR='${params.outdir}/checkpoints/${meta.id}'
         mkdir -p "\$CKPT_DIR"
         if [ -f model_output/chkpoint.pt ]; then
-            cp model_output/chkpoint.pt "\$CKPT_DIR/"
+            cp model_output/chkpoint.pt "\$CKPT_DIR/.chkpoint.pt.tmp" && mv -f "\$CKPT_DIR/.chkpoint.pt.tmp" "\$CKPT_DIR/chkpoint.pt"
             echo "Saved checkpoint to persistent location"
         fi
         """
     }
+
+    input:
+    tuple val(meta), path(dataset)
 
     output:
     tuple val(meta), path("model_output"), emit: model
@@ -41,23 +52,28 @@ process EBBF_TRAIN {
     path "versions.yml"                  , emit: versions
 
     script:
-    def args = task.ext.args ?: ''
-    def attn_res = params.attn_resolutions.tokenize(',').collect { it.trim() as int }
-    def chan_mult = params.channel_mult.tokenize(',').collect { it.trim() as int }
+    def attn_res = params.attn_resolutions.tokenize(',').collect { v -> v.trim() as int }
+    def chan_mult = params.channel_mult.tokenize(',').collect { v -> v.trim() as int }
     def wandb_key = params.wandb_api_key ?: ''
+    def model_weights = params.model_weights ?: ''
+    // Stable, deterministic run id derived from the output dir basename + sample.
+    // Must NOT vary between runs: Nextflow folds the resolved script text into the
+    // task hash, so a per-run-random value (e.g. workflow.runName) would change the
+    // hash on every `-resume` and force EBBF_TRAIN to re-execute — which rewrites
+    // chkpoint.pt and needlessly invalidates all downstream inference.
+    def run_id = "${file(params.outdir).name}_${meta.id}"
     """
     mkdir -p model_output
 
-    # Check for checkpoint staged by beforeScript from previous attempt.
-    # Priority: prev_checkpoint.pt (retry) > provided_weights.pt (per-sample
-    # or global --model_weights, staged via the resume_weights input).
+    # Check for checkpoint staged by beforeScript from previous attempt
+    # Priority: prev_checkpoint.pt (retry) > model_weights (user-provided)
     RESUME_FLAG=""
     if [ -f "prev_checkpoint.pt" ]; then
         RESUME_FLAG="--resume_from prev_checkpoint.pt"
-        echo "Resuming from staged checkpoint (attempt ${task.attempt})"
-    elif [ -f "provided_weights.pt" ]; then
-        RESUME_FLAG="--resume_from provided_weights.pt"
-        echo "Resuming from provided weights"
+        echo "Resuming from staged checkpoint"
+    elif [ -n "${model_weights}" ]; then
+        RESUME_FLAG="--resume_from ${model_weights}"
+        echo "Resuming from provided weights: ${model_weights}"
     fi
 
     # Generate config from params
@@ -131,22 +147,9 @@ EOFCONFIG
         export WANDB_API_KEY="${wandb_key}"
     fi
 
-    # Persist a wandb run ID alongside the checkpoint so retries (which get
-    # fresh work dirs) resume the same wandb run. The nonce is generated at
-    # bash runtime, not Groovy render time, so it does not enter the task
-    # hash — that keeps -resume working across Nextflow invocations.
-    # A fresh Nextflow invocation that actually re-executes this task (cache
-    # miss) will generate a new ID iff no prior run-id file exists; delete
-    # the file under \$CKPT_DIR to force a brand-new wandb run.
-    CKPT_DIR='${params.outdir}/checkpoints/${meta.id}'
-    mkdir -p "\$CKPT_DIR"
-    WANDB_ID_FILE="\$CKPT_DIR/wandb_run_id.txt"
-    if [ -f "\$WANDB_ID_FILE" ]; then
-        export WANDB_RUN_ID="\$(cat "\$WANDB_ID_FILE")"
-    else
-        export WANDB_RUN_ID="${params.experiment_name}_${meta.id}_\$(date +%s)_\$\$"
-        echo "\$WANDB_RUN_ID" > "\$WANDB_ID_FILE"
-    fi
+    # Consistent run ID across retries/resumes so wandb resumes the same run
+    # (and so this value never varies the Nextflow task hash — see run_id above).
+    export WANDB_RUN_ID="${run_id}"
     export WANDB_RESUME="allow"
 
     ebbf-train --config train_config.yaml --dataset ${dataset} --output_dir model_output \$RESUME_FLAG

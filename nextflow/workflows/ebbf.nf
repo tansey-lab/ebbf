@@ -36,9 +36,9 @@ workflow EBBF {
     if (params.preprocess_dir) {
         // Use existing preprocessing outputs
         ch_dataset = ch_samplesheet
-            .map { meta, zarr_dir -> [ meta, file("${params.preprocess_dir}/stdata.npz") ] }
+            .map { meta, _zarr_dir -> [ meta, file("${params.preprocess_dir}/stdata.npz") ] }
         ch_transcripts = ch_samplesheet
-            .map { meta, zarr_dir -> [ meta, file("${params.preprocess_dir}/transcripts.parquet") ] }
+            .map { meta, _zarr_dir -> [ meta, file("${params.preprocess_dir}/transcripts.parquet") ] }
     } else {
         def tissue_boundaries_file = params.tissue_boundaries ? file(params.tissue_boundaries, checkIfExists: true) : []
         ch_preprocess_input = ch_samplesheet
@@ -56,18 +56,18 @@ workflow EBBF {
         ch_infer_sample_count = ch_samplesheet.count()
         ch_postprocess_prepare_input = ch_samplesheet
             .combine(ch_infer_sample_count)
-            .map { meta, zarr_dir, n_samplesheet_rows ->
+            .map { meta, _zarr_dir, n_samplesheet_rows ->
                 def base = file(params.inference_results, checkIfExists: true)
                 if (!base.isDirectory()) {
                     error("inference_results must be a directory: ${base}")
                 }
                 def nested_glob = file("${base}/${meta.id}/part-*.parquet")
                 def parts = nested_glob instanceof List ? nested_glob : (nested_glob ? [nested_glob] : [])
-                parts = parts.flatten().findAll { it }
+                parts = parts.flatten().findAll { p -> p }
                 if (parts.isEmpty() && n_samplesheet_rows == 1) {
                     def flat_glob = file("${base}/part-*.parquet")
                     def flat_list = flat_glob instanceof List ? flat_glob : (flat_glob ? [flat_glob] : [])
-                    parts = flat_list.flatten().findAll { it }
+                    parts = flat_list.flatten().findAll { p -> p }
                 }
                 if (parts.isEmpty()) {
                     def tried = "${base}/${meta.id}/part-*.parquet"
@@ -82,41 +82,21 @@ workflow EBBF {
             .join(ch_dataset)
     } else {
         //
-        // STEP 2: Train or skip — resolved per sample
+        // STEP 2: Train or skip
+        // model_weights + resume_training  -> train with --resume_from
+        // model_weights + !resume_training -> skip training, use weights directly
+        // !model_weights                   -> train from scratch
         //
-        // Effective weights for a sample come from (highest priority first):
-        //   1. meta.model_weights (samplesheet column)
-        //   2. params.model_weights (global)
-        //   3. none -> train from scratch
-        //
-        // If effective weights are set AND !params.resume_training: skip training
-        // for that sample. Otherwise: run EBBF_TRAIN (which itself uses
-        // params.model_weights as a --resume_from starting point when set).
-        //
-        def branched = ch_dataset.branch { meta, dataset ->
-            def w = meta.model_weights ?: params.model_weights
-            skip_train: w && !params.resume_training
-            train:      true
+        if (params.model_weights && !params.resume_training) {
+            // Skip training, use provided weights directly for inference
+            ch_weights = ch_dataset
+                .map { meta, _dataset -> [ meta, file(params.model_weights) ] }
+        } else {
+            // Train the model (optionally resuming from model_weights)
+            EBBF_TRAIN(ch_dataset)
+            ch_versions = ch_versions.mix(EBBF_TRAIN.out.versions.first())
+            ch_weights = EBBF_TRAIN.out.weights
         }
-
-        ch_skip_weights = branched.skip_train.map { meta, dataset ->
-            def w = meta.model_weights ?: params.model_weights
-            [ meta, file(w, checkIfExists: true) ]
-        }
-
-        // For samples that go through training, attach the per-sample
-        // resume-from checkpoint (or the global params.model_weights), or []
-        // when there is nothing to resume from.
-        ch_train_input = branched.train.map { meta, dataset ->
-            def w = meta.model_weights ?: params.model_weights
-            def weights_file = w ? file(w, checkIfExists: true) : []
-            [ meta, dataset, weights_file ]
-        }
-
-        EBBF_TRAIN(ch_train_input)
-        ch_versions = ch_versions.mix(EBBF_TRAIN.out.versions.first())
-
-        ch_weights = ch_skip_weights.mix(EBBF_TRAIN.out.weights)
 
         //
         // STEP 3: Infer - Run inference with the trained model
@@ -126,7 +106,7 @@ workflow EBBF {
         ch_infer_input = ch_weights
             .join(ch_dataset)
             .join(ch_samplesheet)
-            .combine(Channel.of(0..<params.n_infer_workers))
+            .combine(channel.of(0..<params.n_infer_workers))
             .map { meta, weights, dataset, zarr_dir, worker_id ->
                 [ meta, weights, dataset, zarr_dir, params.n_infer_workers, worker_id ]
             }
@@ -153,7 +133,7 @@ workflow EBBF {
 
     ch_postprocess_map_input = EBBF_POSTPROCESS_PREPARE.out.step4
         .join(ch_dataset)
-        .combine(Channel.of(0..<params.n_postprocess_workers))
+        .combine(channel.of(0..<params.n_postprocess_workers))
         .map { meta, step4_parquet, dataset_file, worker_id ->
             [ meta, step4_parquet, dataset_file, params.n_postprocess_workers, worker_id ]
         }
@@ -203,7 +183,7 @@ workflow EBBF {
     //
     // Collate and save software versions
     //
-    def topic_versions = Channel.topic("versions")
+    def topic_versions = channel.topic("versions")
         .distinct()
         .branch { entry ->
             versions_file: entry instanceof Path
