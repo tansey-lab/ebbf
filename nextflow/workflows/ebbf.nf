@@ -82,41 +82,21 @@ workflow EBBF {
             .join(ch_dataset)
     } else {
         //
-        // STEP 2: Train or skip — resolved per sample
+        // STEP 2: Train or skip
+        // model_weights + resume_training  -> train with --resume_from
+        // model_weights + !resume_training -> skip training, use weights directly
+        // !model_weights                   -> train from scratch
         //
-        // Effective weights for a sample come from (highest priority first):
-        //   1. meta.model_weights (samplesheet column)
-        //   2. params.model_weights (global)
-        //   3. none -> train from scratch
-        //
-        // If effective weights are set AND !params.resume_training: skip training
-        // for that sample. Otherwise: run EBBF_TRAIN (which itself uses
-        // params.model_weights as a --resume_from starting point when set).
-        //
-        def branched = ch_dataset.branch { meta, dataset ->
-            def w = meta.model_weights ?: params.model_weights
-            skip_train: w && !params.resume_training
-            train:      true
+        if (params.model_weights && !params.resume_training) {
+            // Skip training, use provided weights directly for inference
+            ch_weights = ch_dataset
+                .map { meta, _dataset -> [ meta, file(params.model_weights) ] }
+        } else {
+            // Train the model (optionally resuming from model_weights)
+            EBBF_TRAIN(ch_dataset)
+            ch_versions = ch_versions.mix(EBBF_TRAIN.out.versions.first())
+            ch_weights = EBBF_TRAIN.out.weights
         }
-
-        ch_skip_weights = branched.skip_train.map { meta, dataset ->
-            def w = meta.model_weights ?: params.model_weights
-            [ meta, file(w, checkIfExists: true) ]
-        }
-
-        // For samples that go through training, attach the per-sample
-        // resume-from checkpoint (or the global params.model_weights), or []
-        // when there is nothing to resume from.
-        ch_train_input = branched.train.map { meta, dataset ->
-            def w = meta.model_weights ?: params.model_weights
-            def weights_file = w ? file(w, checkIfExists: true) : []
-            [ meta, dataset, weights_file ]
-        }
-
-        EBBF_TRAIN(ch_train_input)
-        ch_versions = ch_versions.mix(EBBF_TRAIN.out.versions.first())
-
-        ch_weights = ch_skip_weights.mix(EBBF_TRAIN.out.weights)
 
         //
         // STEP 3: Infer - Run inference with the trained model
