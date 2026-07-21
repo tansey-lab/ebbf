@@ -117,8 +117,13 @@ workflow EBBF {
         //
         // STEP 4 (input): Aggregate inference worker outputs per sample
         //
+        // Each sample emits exactly n_infer_workers tuples into `results` (one per
+        // worker task). Passing `size` lets groupTuple release each sample's group
+        // as soon as its own workers finish, instead of waiting for the whole
+        // EBBF_INFER channel to drain — otherwise no sample can advance to
+        // EBBF_POSTPROCESS_PREPARE until ALL samples finish inference.
         ch_postprocess_prepare_input = EBBF_INFER.out.results
-            .groupTuple()
+            .groupTuple(size: params.n_infer_workers)
             .map { meta, parquet_list ->
                 [ meta, parquet_list.flatten() ]
             }
@@ -141,8 +146,11 @@ workflow EBBF {
     EBBF_POSTPROCESS_MAP(ch_postprocess_map_input)
     ch_versions = ch_versions.mix(EBBF_POSTPROCESS_MAP.out.versions.first())
 
+    // Same pattern: each sample emits n_postprocess_workers tuples into `mapped`,
+    // so give groupTuple the size to release each sample independently rather than
+    // barriering EBBF_POSTPROCESS_MERGE behind every sample's MAP step.
     ch_postprocess_merge_input = EBBF_POSTPROCESS_MAP.out.mapped
-        .groupTuple()
+        .groupTuple(size: params.n_postprocess_workers)
         .map { meta, mapped_parts ->
             [ meta, mapped_parts.flatten() ]
         }
