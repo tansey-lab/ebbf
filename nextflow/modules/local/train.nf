@@ -17,19 +17,33 @@ process EBBF_TRAIN {
         """
         CKPT_SRC='${params.outdir}/checkpoints/${meta.id}/chkpoint.pt'
         if [ -f "\$CKPT_SRC" ]; then
-            cp "\$CKPT_SRC" prev_checkpoint.pt
-            echo "Staged checkpoint from previous attempt"
+            # A checkpoint half-written by a preempted/killed attempt is a truncated
+            # zip with no End-of-Central-Directory record (PK\\x05\\x06). torch.load
+            # then raises "PytorchStreamReader failed ... central directory" and
+            # crashes on EVERY retry — an unrecoverable loop. Validate before staging
+            # (coreutils only, no python: beforeScript runs outside the conda env);
+            # quarantine a corrupt file so training restarts clean and afterScript can
+            # replace it with a good checkpoint.
+            if tail -c 128 "\$CKPT_SRC" | od -An -tx1 | tr -d ' \\n' | grep -q 504b0506; then
+                cp "\$CKPT_SRC" prev_checkpoint.pt
+                echo "Staged checkpoint from previous attempt"
+            else
+                echo "WARNING: persistent checkpoint \$CKPT_SRC is corrupt; quarantining and training from scratch"
+                mv "\$CKPT_SRC" "\$CKPT_SRC.corrupt" || rm -f "\$CKPT_SRC"
+            fi
         fi
         """
     }
 
-    // Save checkpoint to persistent location after each attempt (runs even on failure)
+    // Save checkpoint to persistent location after each attempt (runs even on failure).
+    // Write to a temp file then atomically rename so an interrupted copy can never
+    // leave a truncated checkpoint behind (which would poison every future retry).
     afterScript {
         """
         CKPT_DIR='${params.outdir}/checkpoints/${meta.id}'
         mkdir -p "\$CKPT_DIR"
         if [ -f model_output/chkpoint.pt ]; then
-            cp model_output/chkpoint.pt "\$CKPT_DIR/"
+            cp model_output/chkpoint.pt "\$CKPT_DIR/.chkpoint.pt.tmp" && mv -f "\$CKPT_DIR/.chkpoint.pt.tmp" "\$CKPT_DIR/chkpoint.pt"
             echo "Saved checkpoint to persistent location"
         fi
         """

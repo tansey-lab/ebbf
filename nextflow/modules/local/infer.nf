@@ -3,6 +3,39 @@ process EBBF_INFER {
     label 'process_high'
     label 'process_gpu'
 
+    // Stage a previously-completed shard for this (sample, worker) back into the
+    // task dir before the command runs. ebbf-infer sees the existing
+    // part-<worker>.parquet and exits 0 immediately (see cli/infer.py), so a worker
+    // that already finished is never recomputed — even across pipeline restarts or
+    // when an upstream retrain gives the INFER task a fresh Nextflow hash.
+    beforeScript {
+        """
+        SHARD_DIR='${params.outdir}/infer_shards/${meta.id}'
+        W=\$(printf '%04d' ${worker_id})
+        if [ -f "\$SHARD_DIR/part-\$W.parquet" ]; then
+            cp "\$SHARD_DIR/part-\$W.parquet" "part-\$W.parquet"
+            echo "Reusing completed inference shard part-\$W from \$SHARD_DIR"
+        fi
+        """
+    }
+
+    // Persist each fully-written shard to a stable location. Only files ending in the
+    // parquet "PAR1" magic are saved, so a shard truncated by preemption is never
+    // cached as done. Written to a temp name + atomic rename to avoid partial copies.
+    afterScript {
+        """
+        SHARD_DIR='${params.outdir}/infer_shards/${meta.id}'
+        mkdir -p "\$SHARD_DIR"
+        for f in part-*.parquet; do
+            [ -f "\$f" ] || continue
+            [ -f "\$SHARD_DIR/\$f" ] && continue   # already persisted (likely reused) — don't re-copy
+            if [ "\$(tail -c 4 "\$f" 2>/dev/null)" = "PAR1" ]; then
+                cp "\$f" "\$SHARD_DIR/.\$f.tmp" && mv -f "\$SHARD_DIR/.\$f.tmp" "\$SHARD_DIR/\$f"
+            fi
+        done
+        """
+    }
+
     input:
     tuple val(meta), path(weights), path(dataset), path(zarr_dir), val(n_workers), val(worker_id)
 
