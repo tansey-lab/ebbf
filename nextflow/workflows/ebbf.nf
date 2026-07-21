@@ -36,9 +36,9 @@ workflow EBBF {
     if (params.preprocess_dir) {
         // Use existing preprocessing outputs
         ch_dataset = ch_samplesheet
-            .map { meta, zarr_dir -> [ meta, file("${params.preprocess_dir}/stdata.npz") ] }
+            .map { meta, _zarr_dir -> [ meta, file("${params.preprocess_dir}/stdata.npz") ] }
         ch_transcripts = ch_samplesheet
-            .map { meta, zarr_dir -> [ meta, file("${params.preprocess_dir}/transcripts.parquet") ] }
+            .map { meta, _zarr_dir -> [ meta, file("${params.preprocess_dir}/transcripts.parquet") ] }
     } else {
         def tissue_boundaries_file = params.tissue_boundaries ? file(params.tissue_boundaries, checkIfExists: true) : []
         ch_preprocess_input = ch_samplesheet
@@ -56,18 +56,18 @@ workflow EBBF {
         ch_infer_sample_count = ch_samplesheet.count()
         ch_postprocess_prepare_input = ch_samplesheet
             .combine(ch_infer_sample_count)
-            .map { meta, zarr_dir, n_samplesheet_rows ->
+            .map { meta, _zarr_dir, n_samplesheet_rows ->
                 def base = file(params.inference_results, checkIfExists: true)
                 if (!base.isDirectory()) {
                     error("inference_results must be a directory: ${base}")
                 }
                 def nested_glob = file("${base}/${meta.id}/part-*.parquet")
                 def parts = nested_glob instanceof List ? nested_glob : (nested_glob ? [nested_glob] : [])
-                parts = parts.flatten().findAll { it }
+                parts = parts.flatten().findAll { p -> p }
                 if (parts.isEmpty() && n_samplesheet_rows == 1) {
                     def flat_glob = file("${base}/part-*.parquet")
                     def flat_list = flat_glob instanceof List ? flat_glob : (flat_glob ? [flat_glob] : [])
-                    parts = flat_list.flatten().findAll { it }
+                    parts = flat_list.flatten().findAll { p -> p }
                 }
                 if (parts.isEmpty()) {
                     def tried = "${base}/${meta.id}/part-*.parquet"
@@ -126,7 +126,7 @@ workflow EBBF {
         ch_infer_input = ch_weights
             .join(ch_dataset)
             .join(ch_samplesheet)
-            .combine(Channel.of(0..<params.n_infer_workers))
+            .combine(channel.of(0..<params.n_infer_workers))
             .map { meta, weights, dataset, zarr_dir, worker_id ->
                 [ meta, weights, dataset, zarr_dir, params.n_infer_workers, worker_id ]
             }
@@ -153,7 +153,7 @@ workflow EBBF {
 
     ch_postprocess_map_input = EBBF_POSTPROCESS_PREPARE.out.step4
         .join(ch_dataset)
-        .combine(Channel.of(0..<params.n_postprocess_workers))
+        .combine(channel.of(0..<params.n_postprocess_workers))
         .map { meta, step4_parquet, dataset_file, worker_id ->
             [ meta, step4_parquet, dataset_file, params.n_postprocess_workers, worker_id ]
         }
@@ -203,7 +203,7 @@ workflow EBBF {
     //
     // Collate and save software versions
     //
-    def topic_versions = Channel.topic("versions")
+    def topic_versions = channel.topic("versions")
         .distinct()
         .branch { entry ->
             versions_file: entry instanceof Path

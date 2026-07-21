@@ -13,7 +13,6 @@ process EBBF_PREPROCESS {
 
     script:
     def args = task.ext.args ?: ''
-    def prefix = task.ext.prefix ?: "${meta.id}"
     def shapefile_arg = tissue_boundaries ? "--shapefile ${tissue_boundaries}" : ''
     """
     mkdir -p plots
