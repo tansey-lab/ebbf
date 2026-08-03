@@ -25,6 +25,20 @@
                 "exists": true,
                 "errorMessage": "Optional path to a pre-trained .pt checkpoint. When set, training is skipped for this sample and these weights are used directly for inference.",
                 "meta": ["model_weights"]
+            },
+            "preprocess_dir": {
+                "type": "string",
+                "format": "directory-path",
+                "exists": true,
+                "errorMessage": "Optional directory holding an existing stdata.npz and transcripts.parquet for this sample. When set, preprocessing is skipped and those files are reused.",
+                "meta": ["preprocess_dir"]
+            },
+            "inference_results": {
+                "type": "string",
+                "format": "directory-path",
+                "exists": true,
+                "errorMessage": "Optional directory of part-*.parquet inference shards for this sample (either directly, or under a <sample-id>/ subdirectory). When set, training and inference are skipped and these shards feed postprocessing.",
+                "meta": ["inference_results"]
             }
         },
         "required": ["sample", "zarr_dir"]
