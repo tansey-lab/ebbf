@@ -594,6 +594,10 @@ def visualize_boundaries(
     cell_boundaries_ebbf.parquet), or pass the raw inputs to build one. Default
     Xenium boundaries are loaded here from `xenium_dir` (if provided) and
     combined in-memory just for visualization.
+
+    Returns the list of sampled tissue-patch bounds that were rendered, each as
+    ``(xmin, ymin, xmax, ymax)`` in micron coordinates, so downstream steps can
+    reproduce the exact same patch selection.
     """
     os.makedirs(output_dir, exist_ok=True)
     output_prefix = os.path.join(output_dir, "boundaries")
@@ -616,7 +620,7 @@ def visualize_boundaries(
 
     if len(gdf_combined) == 0:
         logger.warning("No boundaries to visualize")
-        return
+        return []
 
     if "segmentation" in gdf_combined.columns:
         gdf_default = gdf_combined[gdf_combined["segmentation"] == "Default"]
@@ -642,6 +646,7 @@ def visualize_boundaries(
     sindex_default = gdf_default.sindex if len(gdf_default) > 0 else None
 
     rendered = 0
+    rendered_patches: list[tuple[float, float, float, float]] = []
     for i, j in grid:
         if rendered >= MAX_PATCHES:
             break
@@ -658,6 +663,7 @@ def visualize_boundaries(
             continue
 
         _render_patch(gdf_default, gdf_ebbf, bbox, output_prefix, rendered, dpi=dpi)
+        rendered_patches.append(bbox)
         rendered += 1
 
     # Render zoomed center regions
@@ -740,3 +746,4 @@ def visualize_boundaries(
         logger.info("  Saved %s", output_path)
 
     logger.info("Visualization complete!")
+    return rendered_patches

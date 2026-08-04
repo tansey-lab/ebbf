@@ -2165,6 +2165,120 @@ def generate_unfiltered_denovo_plot(
     return out_path
 
 
+def generate_roi_cluster_report(
+    patches,
+    ef_tx_fname,
+    unfiltered_anndata_fname,
+    xenium_dir,
+    output_dir,
+    sd=None,
+):
+    """Render the EBBF-clusters-vs-IF ROI figure for a set of tissue patches.
+
+    ``patches`` is the list of ``(xmin, ymin, xmax, ymax)`` bounds returned by
+    :func:`ebbf.inference.visualization.visualize_boundaries`, so the ROIs shown
+    here are exactly the patches that step chose. Each patch produces one figure
+    (whole-slide DAPI orientation panel, EBBF transcript clusters, and the
+    morphology_focus IF composite with the Xenium segmentation overlaid), all
+    embedded into a single HTML report.
+
+    Requires the EBBF transcript parquet (for x_initial/y_initial/cluster ids) and
+    the unfiltered AnnData (for the de novo flag). The morphology image and Xenium
+    boundaries come from the already-loaded SpatialData object ``sd`` when provided
+    (works for both Xenium Ranger and SpatialData zarr inputs); otherwise they are
+    read from ``xenium_dir``. Skipped if any required input is missing.
+    """
+    from ebbf.inference.roi_plot import Config, make_source, plot_roi
+
+    output_path = Path(output_dir) / "roi_clusters.html"
+    logger.info("Generating ROI cluster-vs-IF report...")
+
+    if not patches:
+        logger.warning("  No patches to render — skipping ROI cluster report")
+        return
+    if ef_tx_fname is None:
+        logger.warning("  ROI cluster report requires --ef_tx — skipping")
+        return
+    if unfiltered_anndata_fname is None:
+        logger.warning("  ROI cluster report requires --ebbf_unfiltered — skipping")
+        return
+
+    cfg = Config(
+        ef=ef_tx_fname,
+        ef_h5ad=unfiltered_anndata_fname,
+        xenium=xenium_dir,
+    )
+    source = make_source(cfg, sd=sd)
+    if not source.has_morphology():
+        logger.warning(
+            "  No morphology image found for %s — skipping ROI cluster report",
+            xenium_dir,
+        )
+        return
+
+    images = []
+    for idx, (px_min, py_min, px_max, py_max) in enumerate(patches):
+        # visualize_boundaries emits (xmin, ymin, xmax, ymax); plot_roi wants
+        # (xmin, xmax, ymin, ymax).
+        roi = (px_min, px_max, py_min, py_max)
+        logger.info(
+            "  Rendering ROI patch %d/%d: x[%.1f, %.1f] y[%.1f, %.1f]",
+            idx + 1,
+            len(patches),
+            px_min,
+            px_max,
+            py_min,
+            py_max,
+        )
+        try:
+            fig = plot_roi(roi, cfg, source=source)
+        except Exception as e:
+            logger.warning("  Skipping patch %d (%s)", idx, e)
+            continue
+        images.append((roi, _fig_to_base64(fig, dpi=cfg.dpi)))
+
+    if not images:
+        logger.warning("  No ROI patches could be rendered — skipping ROI cluster report")
+        return
+
+    sections = "\n".join(
+        f"""
+<div class="section">
+<h2>Patch {i + 1} — x[{roi[0]:.1f}, {roi[1]:.1f}] y[{roi[2]:.1f}, {roi[3]:.1f}] µm</h2>
+<img src="data:image/png;base64,{img}">
+</div>"""
+        for i, (roi, img) in enumerate(images)
+    )
+
+    html = f"""<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<title>EBBF Clusters vs IF — ROI Patches</title>
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+         max-width: 1600px; margin: 0 auto; padding: 20px; background: #fafafa; color: #333; }}
+  h1 {{ border-bottom: 3px solid #2c3e50; padding-bottom: 10px; }}
+  h2 {{ color: #1a5276; margin-top: 40px; border-left: 4px solid #1a5276; padding-left: 12px; }}
+  .section {{ background: white; border-radius: 8px; padding: 24px; margin: 20px 0;
+              box-shadow: 0 2px 6px rgba(0,0,0,0.08); }}
+  img {{ max-width: 100%; height: auto; }}
+</style>
+</head><body>
+
+<h1>EBBF Transcript Clusters vs Morphology IF</h1>
+<p>For each of the {len(images)} tissue patches sampled by the boundary-comparison step,
+this figure shows (left) the whole-slide DAPI with the patch boxed, (middle) EBBF
+transcripts at their original positions colored by cluster with spokes to each cluster
+centroid, and (right) the morphology_focus IF composite with the Xenium cell/nucleus
+segmentation overlaid. These are the same patches as in the boundary comparison PDFs.</p>
+{sections}
+
+</body></html>"""
+
+    output_path.write_text(html)
+    logger.info(f"Saved {output_path}")
+
+
 def reporting(
     anndata_fname: str,
     xenium_dir: str,
@@ -2203,9 +2317,10 @@ def reporting(
     adata_default = sd.tables["table"].copy()
 
     # Step 1: Boundary visualizations
+    roi_patches = None
     if ebbf_boundaries_fname is not None:
         logger.info("Step 1: generating boundary visualizations from prebuilt EBBF parquet...")
-        visualize_boundaries(
+        roi_patches = visualize_boundaries(
             output_dir=output_dir,
             ebbf_boundaries=ebbf_boundaries_fname,
             xenium_dir=xenium_dir,
@@ -2213,7 +2328,7 @@ def reporting(
         )
     elif ef_tx_fname is not None and original_tx_fname is not None:
         logger.info("Step 1: generating boundary visualizations...")
-        visualize_boundaries(
+        roi_patches = visualize_boundaries(
             ef_tx_fname=ef_tx_fname,
             original_tx_fname=original_tx_fname,
             output_dir=output_dir,
@@ -2225,6 +2340,20 @@ def reporting(
             "Step 1: skipping boundary visualization (requires --ebbf_boundaries or "
             "--ef_tx and --original_transcripts)"
         )
+
+    # Step 1b: ROI cluster-vs-IF figures for the same patches the boundary step chose
+    if roi_patches:
+        logger.info("Step 1b: generating ROI cluster-vs-IF report...")
+        generate_roi_cluster_report(
+            patches=roi_patches,
+            ef_tx_fname=ef_tx_fname,
+            unfiltered_anndata_fname=unfiltered_anndata_fname,
+            xenium_dir=xenium_dir,
+            output_dir=output_dir,
+            sd=sd,
+        )
+    else:
+        logger.info("Step 1b: skipping ROI cluster report (no boundary patches rendered)")
 
     # Step 2: Distribution report
     logger.info("Step 2: generating distribution report...")
