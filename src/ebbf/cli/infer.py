@@ -10,6 +10,7 @@ import pyarrow.dataset as ds
 import torch
 from omegaconf import OmegaConf
 
+from ebbf.compat import get_num_cpus
 from ebbf.data.datasets import TxPatchDataset
 from ebbf.data.st_dataset import STDataset, detect_input_format
 from ebbf.inference.infer import FlowInference, infer
@@ -51,6 +52,21 @@ def main():
         help="Overwrite existing output",
     )
     parser.add_argument(
+        "--pad_boxes",
+        type=float,
+        default=0.0,
+        help="Pad each inference box by this many microns on every side (default: 0)",
+    )
+    parser.add_argument(
+        "--nuc_embedding_index",
+        type=int,
+        default=1,
+        help=(
+            "For legacy checkpoints with one nucleus embedding per cell type, the row to "
+            "use as the single nucleus embedding (default: 1)"
+        ),
+    )
+    parser.add_argument(
         "--input_format",
         type=str,
         choices=["spatialdata", "xenium"],
@@ -68,6 +84,7 @@ def main():
     output_dir: str = args.output_dir
     overwrite: bool = bool(args.overwrite)
     input_format: str | None = args.input_format
+    pad_boxes: float = args.pad_boxes
 
     # Set up directory and filename
     os.makedirs(output_dir, exist_ok=True)
@@ -97,8 +114,10 @@ def main():
     tx_dataset = ds.dataset(tx_path, format="parquet")
     stdata = STDataset.load(dataset)
     config.n_genes = stdata.genes.shape[0]
-    config.n_ctypes = 1
-    curr_bboxes = np.array_split(stdata.boxes, n_workers)[worker_id]
+    curr_bboxes = np.array_split(stdata.boxes, n_workers)[worker_id].copy()
+    if pad_boxes > 0.0:
+        curr_bboxes[:, :2] -= pad_boxes  ## xmin, ymin
+        curr_bboxes[:, 2:] += pad_boxes  ## xmax, ymax
 
     # Set column names based on input format
     if input_format == "xenium":
@@ -112,22 +131,19 @@ def main():
         nuc_xy=stdata.nuc_xy,
         genes=stdata.genes,
         patch_size=config.data.patch_size,
-        patch_padding=config.data.patch_size,
+        patch_padding=config.data.patch_padding,
         overlap=20,  # x_overlap = y_overlap
         max_tx=config.data.max_tx,
         shuffle=True,
         nuc_ellipse_mat=stdata.nuc_ellipse_mat,
-        nuc_ctype=np.zeros_like(stdata.nuc_ctype_idx),
         x_col=x_col,
         y_col=y_col,
     )
 
     # Load in the model
-    state_dict = torch.load(weights_path, map_location="cpu")
-    model = instantiate_model(config)
-    model.train(False)
-    model.load_state_dict(state_dict["model"])
-    model.float()
+    model = instantiate_model(
+        config, checkpoint_path=weights_path, nuc_embedding_index=args.nuc_embedding_index
+    )
     device_str = config.infer.get("device", "auto")
     if device_str == "auto":
         if torch.cuda.is_available():
@@ -150,11 +166,10 @@ def main():
     )
 
     # Run inference
-    df = infer(
+    infer(
         dataset=dataset,
         flow_inference=flow_inference,
+        num_workers=get_num_cpus(),
         batch_size=config.train.batch_size,
+        filename=filename,
     )
-
-    # Save out the data
-    df.to_parquet(filename)

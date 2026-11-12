@@ -174,7 +174,7 @@ class Conv2d(torch.nn.Module):
             if kernel and bias
             else None
         )
-        f = torch.as_tensor(resample_filter)
+        f = torch.as_tensor(resample_filter, dtype=torch.float32)
         f = f.ger(f).unsqueeze(0).unsqueeze(1) / f.sum().square()
         self.register_buffer("resample_filter", f if up or down else None)
 
@@ -451,4 +451,20 @@ class DhariwalUNet(torch.nn.Module):
             x = block(x, emb)
         x = self.out_conv(F.silu(self.out_norm(x)))
 
+        return x
+
+    def encode(self, x: torch.Tensor, t: torch.Tensor, include_mid: bool = True) -> torch.Tensor:
+        """Encoder trunk only. Returns B x C_b x m x m, where
+        m   = img_resolution >> (len(channel_mult) - 1)
+        C_b = model_channels * channel_mult[-1]
+        include_mid=True also runs the {m}x{m}_in0 / _in1 blocks (post-attention).
+        """
+        emb = self.time_embed(t)
+        for block in self.enc.values():
+            x = block(x, emb) if isinstance(block, UNetBlock) else block(x)
+        if include_mid:
+            for key, block in self.dec.items():
+                if not key.endswith(("_in0", "_in1")):
+                    break  # dec is ordered: _in0, _in1, then skip-consuming blocks
+                x = block(x, emb)
         return x

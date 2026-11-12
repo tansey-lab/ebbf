@@ -25,27 +25,31 @@ def _add_common_args(parser: argparse.ArgumentParser):
     )
 
 
-def _add_denovo_filter_args(parser: argparse.ArgumentParser):
+def _add_classification_args(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--cd_cutoff",
+        type=float,
+        default=2.0,
+        help=(
+            "Max distance (um) from a cluster to its nucleus centroid for the cluster to be"
+            " nucleus-anchored (it must also lie inside the nuclear ellipse) (default: 2.0)"
+        ),
+    )
     parser.add_argument(
         "--denovo_min_tx_pctile",
         type=float,
         default=25.0,
         help=(
-            "Drop de novo cells with transcript counts below this"
-            " percentile of input cell transcript counts (default: 25.0;"
-            " set 0 to disable)"
+            "Non-anchored cells with fewer transcripts than max(this percentile of input"
+            " cell transcript counts, --min_tx_count) are 'fragment', the rest 'denovo'"
+            " (default: 25.0; set 0 to use --min_tx_count alone)"
         ),
     )
     parser.add_argument(
-        "--denovo_filter_report",
-        type=str,
-        default=None,
-        help=(
-            "Path to write a per-cluster filter report parquet covering de novo"
-            " clusters (columns: ef_cluster_id, cell_type, n_tx,"
-            " threshold, pass flag, kept). Defaults to"
-            " '<anndata_output stem>.denovo_filter_report.parquet'."
-        ),
+        "--min_tx_count",
+        type=int,
+        default=50,
+        help="Floor on the de novo transcript-count threshold (default: 50)",
     )
 
 
@@ -74,8 +78,8 @@ def main():
     parser_full.add_argument(
         "--original_transcripts",
         type=str,
-        default=None,
-        help="Path to original transcripts parquet file for distance computation",
+        required=True,
+        help="Path to original transcripts parquet file (source of x_initial / y_initial)",
     )
     parser_full.add_argument(
         "--n_workers",
@@ -83,7 +87,7 @@ def main():
         default=None,
         help="Number of CPU workers for post-processing (default: auto)",
     )
-    _add_denovo_filter_args(parser_full)
+    _add_classification_args(parser_full)
 
     # prepare
     parser_prepare = subparsers.add_parser("prepare", help="Run post-process prepare stage")
@@ -144,8 +148,8 @@ def main():
     parser_merge.add_argument(
         "--original_transcripts",
         type=str,
-        default=None,
-        help="Path to original transcripts parquet file for distance computation",
+        required=True,
+        help="Path to original transcripts parquet file (source of x_initial / y_initial)",
     )
     parser_merge.add_argument(
         "--noise_meta",
@@ -156,7 +160,7 @@ def main():
             " (re-attaches noise columns and appends noise rows)"
         ),
     )
-    _add_denovo_filter_args(parser_merge)
+    _add_classification_args(parser_merge)
 
     args = parser.parse_args()
 
@@ -172,8 +176,9 @@ def main():
             anndata_fname=anndata_fname,
             original_tx_fname=args.original_transcripts,
             n_workers=args.n_workers,
+            cd_cutoff=args.cd_cutoff,
             denovo_min_tx_pctile=args.denovo_min_tx_pctile,
-            denovo_filter_report_fname=args.denovo_filter_report,
+            min_tx_count=args.min_tx_count,
         )
     elif args.command == "prepare":
         post_process_prepare(
@@ -204,6 +209,7 @@ def main():
             original_tx_fname=args.original_transcripts,
             noise_meta_fname=args.noise_meta,
             work_dir=args.work_dir,
+            cd_cutoff=args.cd_cutoff,
             denovo_min_tx_pctile=args.denovo_min_tx_pctile,
-            denovo_filter_report_fname=args.denovo_filter_report,
+            min_tx_count=args.min_tx_count,
         )

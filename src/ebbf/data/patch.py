@@ -7,7 +7,6 @@ class NuclearBatch:
         patch_center: torch.Tensor,  ## B x 2
         nuc_idx: torch.Tensor,  ## n_nucs
         nuc2xy: torch.Tensor,  ## n_nucs x 2
-        nuc2ctype: torch.Tensor,  ## n_nucs
         nuc_seqlens: torch.Tensor,  ## B
         nuc2total_gene_count: torch.Tensor | None = None,  ## n_nucs
         nuc2cell_count: torch.Tensor | None = None,  ## n_nucs
@@ -23,7 +22,6 @@ class NuclearBatch:
         self.patch_center = patch_center
         self.nuc_idx = nuc_idx
         self.nuc2xy = nuc2xy
-        self.nuc2ctype = nuc2ctype
         self.nuc_seqlens = nuc_seqlens
         self.nuc2total_gene_count = nuc2total_gene_count
         self.nuc2genes_probs_seq = nuc2genes_probs_seq

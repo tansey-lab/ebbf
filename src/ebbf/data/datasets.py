@@ -21,8 +21,8 @@ class NuclearPatchDataset(Dataset):
         nuc2xy: np.ndarray,  ## n_nucs x 2
         nuc2total_gene_count: np.ndarray,  ## n_nucs
         nuc2gene_probs: csr_array,  ## n_nucs x n_genes
-        nuc2ctype: np.ndarray,  ## n_nucs
         nuc2cell_count: np.ndarray,
+        punch_bounds: np.ndarray,  ## n_punches x 4 (minx, miny, maxx, maxy)
         patch_size: float,
         patch_padding: float,
         dataset_size: int,
@@ -33,14 +33,15 @@ class NuclearPatchDataset(Dataset):
         cell_triangle_probs: np.ndarray | None = None,
     ):
 
-        # Compute bounds directly from nuclei positions
-        self.data_min = torch.from_numpy(nuc2xy.min(axis=0)).float()
-        self.data_max = torch.from_numpy(nuc2xy.max(axis=0)).float()
+        self.n_punches: int = punch_bounds.shape[0]
+        self.punch_scale_factor = torch.from_numpy(
+            punch_bounds[:, [2, 3]] - punch_bounds[:, [0, 1]]
+        ).float()
+        self.punch_translate_factor = torch.from_numpy(punch_bounds[:, [0, 1]]).float()
 
         self.nuc2gene_probs = TorchCSR(nuc2gene_probs)
         self.n_genes: int = nuc2gene_probs.shape[1]
         self.nuc2total_gene_count = torch.from_numpy(nuc2total_gene_count).float()
-        self.nuc2ctype = torch.from_numpy(nuc2ctype).long()
         self.nuc2xy = torch.from_numpy(nuc2xy).float()
         self.nuc2ellipse_mat = (
             torch.from_numpy(nuc2ellipse_mat).float() if nuc2ellipse_mat is not None else None
@@ -98,9 +99,13 @@ class NuclearPatchDataset(Dataset):
                     f">={self.min_nucs} nuclei (found {n_nuc})"
                 )
 
-            ## Sample the center of the patch within data bounds
+            ## Sample a punch (box) uniformly, then the patch center uniformly within it
+            punch_idx: int = torch.randint(self.n_punches, size=()).item()
             patch_center = torch.rand(1, 2)
-            patch_center = (self.data_max - self.data_min) * patch_center + self.data_min
+            patch_center = (
+                self.punch_scale_factor[punch_idx] * patch_center
+                + self.punch_translate_factor[punch_idx]
+            )
 
             idx = self.rtree.lookup_center_radius(
                 x_center=patch_center[0, 0].item(),
@@ -123,13 +128,11 @@ class NuclearPatchDataset(Dataset):
         )
         nuc2total_gene_count = self.nuc2total_gene_count[idx]
         nuc2cell_count = self.nuc2cell_count[idx]
-        nuc2ctype = self.nuc2ctype[idx]
 
         result = {
             "patch_center": patch_center,
             "nuc_idx": idx,
             "nuc2xy": nuc2xy,
-            "nuc2ctype": nuc2ctype,
             "nuc2total_gene_count": nuc2total_gene_count,
             "nuc2cell_count": nuc2cell_count,
             "nuc2genes_idx_seq": nuc2genes_idx_seq,
@@ -159,7 +162,6 @@ def nuclear_patch_collate_fn(batch: tuple[dict[str, torch.Tensor]]):
         patch_center=torch.concat([x["patch_center"] for x in batch], dim=0),
         nuc_idx=torch.concat([x["nuc_idx"] for x in batch], dim=0),
         nuc2xy=torch.concat([x["nuc2xy"] for x in batch], dim=0),
-        nuc2ctype=torch.concat([x["nuc2ctype"] for x in batch], dim=0),
         nuc2total_gene_count=torch.concat([x["nuc2total_gene_count"] for x in batch], dim=0),
         nuc2cell_count=torch.concat([x["nuc2cell_count"] for x in batch], dim=0),
         nuc2genes_idx_seq=torch.concat([x["nuc2genes_idx_seq"] for x in batch], dim=0),
@@ -189,7 +191,6 @@ class TxPatchDataset(IterableDataset):
         max_tx: int,
         shuffle: bool = False,
         nuc_ellipse_mat: np.ndarray | None = None,
-        nuc_ctype: np.ndarray | None = None,
         x_col: str = "x",
         y_col: str = "y",
     ):
@@ -203,7 +204,6 @@ class TxPatchDataset(IterableDataset):
         self.nmax = max_tx
         self.shuffle = shuffle
         self.nuc_ellipse_mat = nuc_ellipse_mat
-        self.nuc_ctype = nuc_ctype
         self.x_col = x_col
         self.y_col = y_col
         gene2idx = {x: i for i, x in enumerate(genes)}
@@ -289,8 +289,6 @@ class TxPatchDataset(IterableDataset):
         )
         res["nuc_xy"] = torch.from_numpy(self.nuc_xy[nuc_mask]).float()
 
-        if self.nuc_ctype is not None:
-            res["nuc_ctype"] = torch.from_numpy(self.nuc_ctype[nuc_mask]).long()
         if self.nuc_ellipse_mat is not None:
             res["nuc_ellipse_mat"] = torch.from_numpy(
                 2 * self.nuc_ellipse_mat[nuc_mask] / self.patch_size

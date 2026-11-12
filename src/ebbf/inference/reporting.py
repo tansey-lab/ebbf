@@ -60,8 +60,8 @@ def _compute_diff_adata(adata_ebbf, adata_default):
     import scanpy as sc
     from anndata import AnnData
 
-    # EBBF original cells only
-    ebbf_orig = adata_ebbf[adata_ebbf.obs["cell_category"] == "original"].copy()
+    # EBBF nucleus-anchored cells only
+    ebbf_orig = adata_ebbf[adata_ebbf.obs["cell_category"] == "nucleus_anchored"].copy()
 
     # Match on cell_id
     adata_default = adata_default.copy()
@@ -160,7 +160,7 @@ def generate_distribution_report(adata_ebbf, adata_default, output_dir):
     sc.pp.filter_cells(adata_default, min_counts=1)
 
     # Split EBBF by category
-    adata_ebbf_filt = adata_ebbf[adata_ebbf.obs["cell_category"] != "denovo"].copy()
+    adata_ebbf_filt = adata_ebbf[adata_ebbf.obs["cell_category"] == "nucleus_anchored"].copy()
     adata_denovo = adata_ebbf[adata_ebbf.obs["cell_category"] == "denovo"].copy()
     sc.pp.filter_cells(adata_ebbf_filt, min_counts=1)
     sc.pp.filter_cells(adata_denovo, min_counts=1)
@@ -247,7 +247,7 @@ def generate_distribution_report(adata_ebbf, adata_default, output_dir):
     axes[1, 1].set_ylabel("Total Transcripts per Cell")
     axes[1, 1].set_title("Transcript Count Comparison")
 
-    plt.suptitle("Default vs EBBF (original+split)", fontsize=15, y=1.01)
+    plt.suptitle("Default vs EBBF (nucleus-anchored)", fontsize=15, y=1.01)
     plt.tight_layout()
     images["dist_main"] = _fig_to_base64(fig)
 
@@ -495,7 +495,7 @@ def generate_distribution_report(adata_ebbf, adata_default, output_dir):
     stats_rows = []
     for label, counts, genes_det, n in [
         ("Default", d_counts, d_genes, adata_default.n_obs),
-        ("EBBF (orig+split)", e_counts, e_genes, adata_ebbf_filt.n_obs),
+        ("EBBF (nucleus-anchored)", e_counts, e_genes, adata_ebbf_filt.n_obs),
         ("EBBF (de novo)", dn_counts, dn_genes, adata_denovo.n_obs),
     ]:
         if len(counts) > 0:
@@ -630,7 +630,7 @@ def generate_distribution_report(adata_ebbf, adata_default, output_dir):
 </head><body>
 
 <h1>Transcript Distribution Comparison</h1>
-<p><b>Comparison:</b> Default segmentation vs EBBF resegmentation (original+split cells).
+<p><b>Comparison:</b> Default segmentation vs EBBF resegmentation (nucleus-anchored cells).
 De novo cells ({adata_denovo.n_obs:,}) shown separately.</p>
 
 <div class="section">
@@ -648,7 +648,7 @@ De novo cells ({adata_denovo.n_obs:,}) shown separately.</p>
 
 <div class="section">
 <h2>Cell-Level Transcript Distributions</h2>
-<p>Comparison of total transcripts per cell and genes detected per cell between Default and EBBF (original+split) segmentations.</p>
+<p>Comparison of total transcripts per cell and genes detected per cell between Default and EBBF (nucleus-anchored) segmentations.</p>
 <img src="data:image/png;base64,{images["dist_main"]}">
 </div>
 
@@ -1514,8 +1514,8 @@ def generate_morphology_report(adata_ebbf, adata_default, xenium_dir, output_dir
 
     Compares geometric quality metrics of cell (and nucleus) boundaries between
     the default Xenium segmentation and the subset of EBBF cells classified as
-    "original" (those that kept the default boundary, i.e. were not split or
-    created de-novo).  The population-level shift in distributions reveals
+    "nucleus_anchored" (those that kept the default boundary, i.e. are not de novo
+    cells or fragments).  The population-level shift in distributions reveals
     whether EBBF preferentially reassigns cells with particular shapes.
 
     Metrics computed per cell:
@@ -1551,12 +1551,12 @@ def generate_morphology_report(adata_ebbf, adata_default, xenium_dir, output_dir
         logger.warning(f"  Failed to compute default morphology stats: {e}")
         return
 
-    # --- EBBF original cells (after) ---
-    # Original cells share the same polygon boundaries as the default segmentation.
-    # Split / de-novo cells do not have stored polygon boundaries so they are
+    # --- EBBF nucleus-anchored cells (after) ---
+    # Nucleus-anchored cells share the same polygon boundaries as the default segmentation.
+    # De novo cells / fragments do not have stored polygon boundaries so they are
     # excluded here; their absence is itself informative at the population level.
-    logger.info("  Computing morphological statistics for EBBF original cells...")
-    adata_ebbf_orig = adata_ebbf[adata_ebbf.obs["cell_category"] == "original"].copy()
+    logger.info("  Computing morphological statistics for EBBF nucleus-anchored cells...")
+    adata_ebbf_orig = adata_ebbf[adata_ebbf.obs["cell_category"] == "nucleus_anchored"].copy()
     try:
         stats_after = calculate_morphological_statistics(
             adata_ebbf_orig, cell_boundaries, nucleus_boundaries
@@ -1567,11 +1567,11 @@ def generate_morphology_report(adata_ebbf, adata_default, xenium_dir, output_dir
 
     n_before = len(stats_before)
     n_after = len(stats_after)
-    n_split = int((adata_ebbf.obs["cell_category"] == "split").sum())
+    n_fragment = int((adata_ebbf.obs["cell_category"] == "fragment").sum())
     n_denovo = int((adata_ebbf.obs["cell_category"] == "denovo").sum())
     logger.info(
-        f"  Default: {n_before:,} cells | EBBF original: {n_after:,} | "
-        f"split: {n_split:,} | de novo: {n_denovo:,}"
+        f"  Default: {n_before:,} cells | EBBF nucleus-anchored: {n_after:,} | "
+        f"de novo: {n_denovo:,} | fragment: {n_fragment:,}"
     )
 
     # ------------------------------------------------------------------ #
@@ -1659,7 +1659,7 @@ def generate_morphology_report(adata_ebbf, adata_default, xenium_dir, output_dir
                 alpha=0.55,
                 density=True,
                 color=ORANGE,
-                label=f"EBBF original (n={len(a):,})",
+                label=f"EBBF nucleus-anchored (n={len(a):,})",
             )
             ax.set_xlim(xlim)
             ax.set_xlabel(label, fontsize=8)
@@ -1697,7 +1697,11 @@ def generate_morphology_report(adata_ebbf, adata_default, xenium_dir, output_dir
             a = np.sort(stats_after[col].dropna().values)
             ax.plot(b, np.linspace(0, 1, len(b)), color=BLUE, label="Default", linewidth=1.5)
             ax.plot(
-                a, np.linspace(0, 1, len(a)), color=ORANGE, label="EBBF original", linewidth=1.5
+                a,
+                np.linspace(0, 1, len(a)),
+                color=ORANGE,
+                label="EBBF nucleus-anchored",
+                linewidth=1.5,
             )
             ax.set_xlim(0, 1)
             ax.set_xlabel(label, fontsize=8)
@@ -1751,7 +1755,7 @@ def generate_morphology_report(adata_ebbf, adata_default, xenium_dir, output_dir
 <div class="section">
 <h2>Nucleus Shape Metrics</h2>
 <p>Same comparison for nucleus boundary polygons. Nucleus boundaries are unchanged
-by EBBF; differences here reflect population composition (which cells are "original").</p>
+by EBBF; differences here reflect population composition (which cells are "nucleus_anchored").</p>
 <img src="data:image/png;base64,{images["nucleus_metrics"]}">
 </div>"""
 
@@ -1793,7 +1797,7 @@ A rightward shift indicates more "regular" (circular / convex) cells in that pop
 
 <h1>Cell Morphology Report</h1>
 <p><b>Comparison:</b> Default Xenium segmentation (all cells with polygon boundaries) vs
-EBBF "original" cells (cells retained without splitting in the EBBF resegmentation).
+EBBF "nucleus_anchored" cells (cells anchored to a segmented nucleus in the EBBF resegmentation).
 Split and de-novo cells are excluded because they do not have pre-existing polygon boundaries
 stored in the Xenium output.  The population-level distribution shift reveals whether EBBF
 preferentially reassigns or splits cells of particular shapes.</p>
@@ -1802,8 +1806,8 @@ preferentially reassigns or splits cells of particular shapes.</p>
 <h2>Overview</h2>
 <div class="summary">
   <div class="stat-card"><div class="value">{n_before:,}</div><div class="label">Default Cells</div></div>
-  <div class="stat-card"><div class="value">{n_after:,}</div><div class="label">EBBF Original Cells</div></div>
-  <div class="stat-card"><div class="value">{n_split:,}</div><div class="label">EBBF Split Cells</div></div>
+  <div class="stat-card"><div class="value">{n_after:,}</div><div class="label">EBBF Nucleus-Anchored Cells</div></div>
+  <div class="stat-card"><div class="value">{n_fragment:,}</div><div class="label">EBBF Fragments</div></div>
   <div class="stat-card"><div class="value">{n_denovo:,}</div><div class="label">EBBF De Novo Cells</div></div>
   <div class="stat-card"><div class="value">{n_before - n_after:,}</div><div class="label">Cells Split / Reassigned</div></div>
 </div>
@@ -1812,7 +1816,7 @@ preferentially reassigns or splits cells of particular shapes.</p>
 <div class="section">
 <h2>Cell Shape Metrics</h2>
 <p>Overlaid histograms for each geometric quality metric. <span style="color:#1f77b4;font-weight:bold;">Blue</span> = all default cells,
-<span style="color:#ff7f0e;font-weight:bold;">Orange</span> = EBBF original cells (subset).
+<span style="color:#ff7f0e;font-weight:bold;">Orange</span> = EBBF nucleus-anchored cells (subset).
 Shifts between distributions indicate which cell morphologies are enriched or depleted
 after EBBF resegmentation.</p>
 <img src="data:image/png;base64,{images["cell_metrics"]}">
@@ -1843,7 +1847,7 @@ def generate_ellipse_cluster_viz(
 
     Ellipses are reconstructed from ``stdata.nuc_xy`` / ``stdata.nuc_ellipse_mat``
     (no external parquet input). Centroids come from ``adata_ebbf.obs`` and show
-    cluster type (denovo/split/original) and transcript count on mouseover.
+    cluster type (nucleus_anchored/denovo/fragment) and transcript count on mouseover.
     """
     out_path = Path(output_dir) / fname
 
@@ -1904,8 +1908,8 @@ def generate_ellipse_cluster_viz(
   <h1>EBBF cluster centroids over nuclear ellipses</h1>
   <div class="legend">
     <span><span class="swatch" style="background:#6ea8fe"></span>nuclear ellipse</span>
-    <span><span class="swatch" style="background:#2ecc71"></span>original</span>
-    <span><span class="swatch" style="background:#f1c40f"></span>split</span>
+    <span><span class="swatch" style="background:#2ecc71"></span>nucleus_anchored</span>
+    <span><span class="swatch" style="background:#f1c40f"></span>fragment</span>
     <span><span class="swatch" style="background:#e74c3c"></span>denovo</span>
   </div>
 </header>
@@ -1916,7 +1920,7 @@ def generate_ellipse_cluster_viz(
 </div>
 <script>
 const DATA = __DATA__;
-const CAT_COLORS = {original:"#2ecc71", split:"#f1c40f", denovo:"#e74c3c"};
+const CAT_COLORS = {nucleus_anchored:"#2ecc71", fragment:"#f1c40f", denovo:"#e74c3c"};
 
 const cv = document.getElementById("cv");
 const ctx = cv.getContext("2d");
@@ -2051,29 +2055,27 @@ cv.addEventListener("wheel", e => {
     logger.info("Saved ellipse/cluster viz to %s", out_path)
 
 
-def generate_unfiltered_denovo_plot(
-    unfiltered_anndata_fname: str,
+def generate_denovo_plot(
+    adata,
     xenium_boundaries_gdf,
     output_dir: str,
     output_filename: str = "denovo_cells_choropleth.pdf",
 ) -> Path | None:
-    """Plot input Xenium cell boundaries with de-novo centroids colored by
+    """Plot input Xenium cell boundaries with de-novo and fragment centroids colored by
     log1p(n_tx), plus an n_tx histogram with a vertical red line at the de-novo
     tx cutoff.
     """
-    import anndata as ad
     import geopandas as gpd
     from matplotlib.colors import Normalize
 
     out_path = Path(output_dir) / output_filename
-    adata = ad.read_h5ad(unfiltered_anndata_fname)
     obs = adata.obs.copy()
 
     original_shapes = xenium_boundaries_gdf
 
-    denovo = obs.loc[obs["cell_category"].eq("denovo")].copy()
+    denovo = obs.loc[obs["cell_category"].isin(["denovo", "fragment"])].copy()
     if denovo.empty:
-        logger.info("No de novo cells in unfiltered AnnData; skipping plot.")
+        logger.info("No de novo cells or fragments in AnnData; skipping plot.")
         return None
 
     denovo_gdf = gpd.GeoDataFrame(
@@ -2126,7 +2128,7 @@ def generate_unfiltered_denovo_plot(
     ax.invert_yaxis()
     ax.set_axis_off()
     ax.set_title(
-        "Unfiltered EBBF: de novo cells colored by log transcript count",
+        "EBBF: de novo cells and fragments colored by log transcript count",
         fontsize=14,
         pad=12,
     )
@@ -2174,7 +2176,6 @@ def reporting(
     ebbf_boundaries_fname: str | None = None,
     viz_patch_size: float = 500.0,
     stdata_fname: str | None = None,
-    unfiltered_anndata_fname: str | None = None,
 ):
     """
     Generate all reports comparing EBBF vs default segmentation.
@@ -2257,16 +2258,13 @@ def reporting(
     logger.info("Step 5: generating morphology report...")
     generate_morphology_report(adata_ebbf, adata_default, xenium_dir, output_dir)
 
-    # Step 5c: Unfiltered de novo plot (requires unfiltered h5ad)
-    if unfiltered_anndata_fname is not None:
-        logger.info("Step 5c: generating unfiltered de novo plot...")
-        generate_unfiltered_denovo_plot(
-            unfiltered_anndata_fname=unfiltered_anndata_fname,
-            xenium_boundaries_gdf=sd.shapes["cell_boundaries"],
-            output_dir=output_dir,
-        )
-    else:
-        logger.info("Step 5c: skipping unfiltered de novo plot (requires --ebbf_unfiltered)")
+    # Step 5c: De novo / fragment plot
+    logger.info("Step 5c: generating de novo plot...")
+    generate_denovo_plot(
+        adata=adata_ebbf,
+        xenium_boundaries_gdf=sd.shapes["cell_boundaries"],
+        output_dir=output_dir,
+    )
 
     # Step 6: Ellipse / cluster centroid interactive viz
     if stdata_fname is not None:

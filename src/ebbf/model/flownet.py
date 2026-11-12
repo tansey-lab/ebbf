@@ -138,49 +138,14 @@ class GridDecoder(nn.Module):
         img_range: float,
         n_channels: int,
         n_outputs: int = 2,
-        splat: bool = False,
     ):
         super().__init__()
 
-        self.splat = splat
         self.img_range = img_range
         self.grid_size = img_resolution
         self.n_outputs = n_outputs
         self.embed_table = nn.Embedding(n_items, n_channels)
         torch.nn.init.kaiming_uniform_(self.embed_table.weight)
-
-    def nearest_grid_decode(
-        self,
-        X: torch.Tensor,  ## B x C x K x K
-        xy: torch.Tensor,  ## S x 2
-        seqlens: torch.Tensor,  ## B
-    ):
-
-        device = X.device
-        S = xy.shape[0]
-        B, C, *_ = X.shape
-        L = self.img_range
-        M = self.grid_size
-
-        if xy.dtype.is_floating_point:  ## Need to discretize
-            grid_pos = (0.5 * M * (xy + L) / L).long()
-            grid_pos = grid_pos.clip(min=0, max=(M - 1))
-        else:
-            grid_pos = xy
-
-        # Build batch_for_t vectorized
-        batch_for_t = torch.arange(B, device=device).repeat_interleave(seqlens)
-
-        # Indices for channels
-        c = torch.arange(C, device=device).unsqueeze(0).expand(S, C)
-
-        # Expand other indices
-        b_exp = batch_for_t.unsqueeze(1).expand(S, C)
-        x_exp = grid_pos[:, 0].unsqueeze(1).expand(S, C)
-        y_exp = grid_pos[:, 1].unsqueeze(1).expand(S, C)
-
-        out = X[b_exp, c, x_exp, y_exp]  # shape (S, C)
-        return out
 
     def splat_grid_decode(
         self,
@@ -226,18 +191,27 @@ class GridDecoder(nn.Module):
         items: torch.Tensor,  ## S
         seqlens: torch.Tensor,  ## B
     ):
-
-        if self.splat:
-            grid_emb = self.splat_grid_decode(X, xy, seqlens)
-        else:
-            grid_emb = self.nearest_grid_decode(X, xy, seqlens)
-
+        grid_emb = self.splat_grid_decode(X, xy, seqlens)
         grid_emb = rearrange(grid_emb, "S (O C)-> S O C", O=self.n_outputs)  ## S x O x C
 
         ## Take dot products against embeddings
         item_emb = self.embed_table(items).unsqueeze(-2)  ## S x 1 x C
         x = torch.sum(grid_emb * item_emb, dim=-1)  ## S x O
         return x
+
+    def vector_field(
+        self,
+        X: torch.Tensor,  ## B x C x K x K
+        items: torch.Tensor,  ## S
+        restrict_vector: bool = True,
+    ):
+        """Per-item output field on the full grid: B x S x K x K x O (O=2 if restrict_vector)."""
+        X_emb = rearrange(X, "B (O C) M N-> B O C M N", O=self.n_outputs)  ## B x O x C x K x K
+        if restrict_vector:
+            X_emb = X_emb[:, :2, ...]  ## B x 2 x C x K x K
+
+        item_emb = self.embed_table(items)  ## S x C
+        return torch.einsum("btcij,sc->bsijt", X_emb, item_emb)
 
 
 class TxFlowUNet(nn.Module):
@@ -260,12 +234,12 @@ class TxFlowUNet(nn.Module):
 
         self.nuc_condition = config.model.conditioned == "nuc"
         if self.nuc_condition:
-            self.n_ctypes = config.n_ctypes
             self.nuc_channel_frac = config.model.nuc_channel_frac
             nuc_in_channels = int(self.nuc_channel_frac * self.in_channels)
             tx_in_channels = self.in_channels - nuc_in_channels
+            ## A single learned embedding shared by all nuclei
             self.nuc_ellipse_encoder = GridEncoder(
-                (self.n_ctypes + 1),
+                1,
                 img_resolution=self.img_resolution,
                 img_range=self.padding_bound,
                 n_channels=nuc_in_channels,
@@ -278,7 +252,7 @@ class TxFlowUNet(nn.Module):
             img_resolution=self.img_resolution,
             img_range=self.padding_bound,
             n_channels=tx_in_channels,
-            splat=config.model.get("splat", False),
+            splat=config.model.get("splat", True),
         )
 
         n_outputs = 3 if self.pred_noise else 2
@@ -288,7 +262,6 @@ class TxFlowUNet(nn.Module):
             img_range=self.padding_bound,
             n_channels=(self.out_channels // n_outputs),
             n_outputs=n_outputs,
-            splat=config.model.get("splat", False),
         )
 
         self.eps = 1e-4
@@ -301,40 +274,94 @@ class TxFlowUNet(nn.Module):
         tx_seqlens: torch.Tensor | None,
         nuc_ellipse_pos: torch.Tensor | None = None,  ## E x 2
         nuc_ellipse_seqlens: torch.Tensor | None = None,  ## N
-        nuc_ctypes: torch.Tensor | None = None,  ## N
-        nuc_seqlens: torch.Tensor | None = None,
-    ):  ## B
+        nuc_seqlens: torch.Tensor | None = None,  ## B
+    ):
+        ## encode and pass through backbone (B x out_channels x K x K)
+        x = self.encode_and_backbone(
+            tx_pos=tx_pos,
+            t=t,
+            gene_idx=gene_idx,
+            tx_seqlens=tx_seqlens,
+            nuc_ellipse_pos=nuc_ellipse_pos,
+            nuc_ellipse_seqlens=nuc_ellipse_seqlens,
+            nuc_seqlens=nuc_seqlens,
+        )
 
-        ## Convert to an image (B x in_channels x K x K)
+        ## Extract relevant per-transcript vectors
+        xy = tx_pos.clamp(min=(self.eps - self.padding_bound), max=(self.padding_bound - self.eps))
+        return self.tx_grid_decoder(x, xy=xy, items=gene_idx, seqlens=tx_seqlens)
+
+    def encode_inputs(
+        self,
+        tx_pos: torch.Tensor,
+        gene_idx: torch.Tensor,
+        tx_seqlens: torch.Tensor,
+        nuc_ellipse_pos: torch.Tensor | None = None,
+        nuc_ellipse_seqlens: torch.Tensor | None = None,
+        nuc_seqlens: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Rasterize transcripts (+ nuclei) to the B x in_channels x K x K input image."""
         xy = tx_pos.clamp(min=(self.eps - self.padding_bound), max=(self.padding_bound - self.eps))
         x = self.tx_grid_encoder(xy=xy, items=gene_idx, seqlens=tx_seqlens)
 
         if self.nuc_condition:
             batch_nuc_ellipse_seqlens = segmented_sum(nuc_ellipse_seqlens, nuc_seqlens)
-
-            ## Replace -1 with self.n_ctypes
-            nuc_ctypes[nuc_ctypes == -1] = self.n_ctypes
-
-            ## Make sure that ctypes are within bounds
-            nuc_ctypes = torch.clamp(nuc_ctypes, max=self.n_ctypes)
-
-            ## Repeat each cell type the appropriate number of ellipse-grid times
-            nuc_ctypes_rep = torch.repeat_interleave(nuc_ctypes, nuc_ellipse_seqlens)  ## E
-
-            ## Convert to an image (B x in_channels x K x K)
-            nuc_x = self.nuc_ellipse_encoder(
-                xy=nuc_ellipse_pos,
-                items=nuc_ctypes_rep,
-                seqlens=batch_nuc_ellipse_seqlens,
+            nuc_items = torch.zeros(
+                nuc_ellipse_pos.shape[0], dtype=torch.long, device=nuc_ellipse_pos.device
             )
-
-            ## Concatenate along the channels dimension
+            nuc_x = self.nuc_ellipse_encoder(
+                xy=nuc_ellipse_pos, items=nuc_items, seqlens=batch_nuc_ellipse_seqlens
+            )
             x = torch.concat((x, nuc_x), dim=1)
-
-        ## Pass through unet (B x out_channels x K x K)
-        x = self.unet(x, t)
-
-        ## Extract relevant per-transcript vectors
-        x = self.tx_grid_decoder(x, xy=xy, items=gene_idx, seqlens=tx_seqlens)
-
         return x
+
+    def encode_and_backbone(
+        self,
+        tx_pos,
+        t,
+        gene_idx,
+        tx_seqlens,
+        nuc_ellipse_pos=None,
+        nuc_ellipse_seqlens=None,
+        nuc_seqlens=None,
+    ) -> torch.Tensor:
+        x = self.encode_inputs(
+            tx_pos=tx_pos,
+            gene_idx=gene_idx,
+            tx_seqlens=tx_seqlens,
+            nuc_ellipse_pos=nuc_ellipse_pos,
+            nuc_ellipse_seqlens=nuc_ellipse_seqlens,
+            nuc_seqlens=nuc_seqlens,
+        )
+        return self.unet(x, t)
+
+    def bottleneck(
+        self,
+        gene_idx,
+        tx_pos,
+        tx_seqlens,
+        t=None,
+        nuc_ellipse_pos=None,
+        nuc_ellipse_seqlens=None,
+        nuc_seqlens=None,
+        include_mid: bool = True,
+        pool: str = "none",
+    ) -> torch.Tensor:
+        """Bottleneck features. pool='none' -> B x C_b x m x m;
+        'mean' -> B x C_b; 'meanmax' -> B x 2*C_b."""
+        if t is None:
+            t = torch.zeros(tx_seqlens.shape[0], device=tx_pos.device, dtype=torch.float32)
+        x = self.encode_inputs(
+            tx_pos=tx_pos,
+            gene_idx=gene_idx,
+            tx_seqlens=tx_seqlens,
+            nuc_ellipse_pos=nuc_ellipse_pos,
+            nuc_ellipse_seqlens=nuc_ellipse_seqlens,
+            nuc_seqlens=nuc_seqlens,
+        )
+        h = self.unet.encode(x, t, include_mid=include_mid)
+        if pool == "mean":
+            h = h.mean(dim=(-2, -1))
+        elif pool == "meanmax":
+            h = torch.cat([h.mean(dim=(-2, -1)), h.amax(dim=(-2, -1))], dim=1)
+        return h

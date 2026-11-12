@@ -1,5 +1,6 @@
 """Tests for post-processing stages."""
 
+import anndata
 import numpy as np
 import polars as pl
 import pyarrow.dataset as ds
@@ -7,14 +8,16 @@ import pytest
 
 from ebbf.data.st_dataset import STDataset
 from ebbf.inference.post_process import (
+    calculate_tx_distances,
     ck_decode_cluster_id,
     ck_decode_grid_version,
     ck_decode_super_grid_label,
     ck_encode,
+    classify_clusters,
     compute_cluster_to_cell_mapping,
-    create_anndata,
     double_grid_and_group,
     map_clusters_to_cells,
+    post_process_merge,
 )
 
 
@@ -164,8 +167,6 @@ def _make_cluster_input_parquet(path: str):
             "feature_name": np.where(np.arange(rows) % 2 == 0, "GeneA", "GeneB"),
             "x": x_base + (ef_cluster_id * 0.2),
             "y": y_base + (ef_cluster_id * 0.1),
-            "x_initial": x_base,
-            "y_initial": y_base,
             "ef_cluster_id": ef_cluster_id.astype(np.int64),
         }
     )
@@ -373,66 +374,128 @@ class TestComputeClusterToCellMapping:
         assert out["cell_id"].to_list() == [0, 1]
 
 
-def test_create_anndata_classifies_only_by_mahalanobis_distance(tmp_path):
-    """High centroid distance no longer creates a split cell category."""
-    tx_path = tmp_path / "ef.parquet"
-    output_path = tmp_path / "ef.h5ad"
-
-    pl.DataFrame(
+def _make_mapped_tx() -> pl.DataFrame:
+    """Step 5 output: three clusters near nucleus 10, one far from both nuclei."""
+    return pl.DataFrame(
         {
-            "transcript_id": np.arange(6, dtype=np.uint64),
-            "feature_name": ["GeneA", "GeneA", "GeneB", "GeneB", "GeneA", "GeneB"],
-            "cell_id": [10, 10, 10, 10, 20, 20],
-            "x": [0.0, 0.2, 1.0, 1.2, 5.0, 5.2],
-            "y": [0.0, 0.1, 1.0, 1.1, 5.0, 5.2],
-            "x_initial": [0.0, 0.2, 1.0, 1.2, 5.0, 5.2],
-            "y_initial": [0.0, 0.1, 1.0, 1.1, 5.0, 5.2],
-            "centroid_distance": [0.1, 0.1, 99.0, 99.0, 2.0, 2.0],
-            "mahalanobis_distance": [0.5, 0.5, 0.8, 0.8, 1.2, 1.2],
-            "ef_cluster_id": [1, 1, 2, 2, 3, 3],
+            "transcript_id": np.arange(7, dtype=np.uint64),
+            "feature_name": ["GeneA", "GeneA", "GeneB", "GeneB", "GeneA", "GeneB", "GeneB"],
+            "cell_id": [10, 10, 10, 10, 20, 20, 20],
+            "x": [0.0, 0.2, 1.0, 1.2, 5.0, 5.2, 5.4],
+            "y": [0.0, 0.1, 1.0, 1.1, 5.0, 5.2, 5.4],
+            "centroid_distance": [0.1, 0.1, 99.0, 99.0, 2.0, 2.0, 2.0],
+            "mahalanobis_distance": [0.5, 0.5, 0.8, 0.8, 1.2, 1.2, 1.2],
+            "ef_cluster_id": [1, 1, 2, 2, 3, 3, 3],
         }
-    ).write_parquet(tx_path)
+    )
 
-    dataset = STDataset(
+
+def _make_dataset() -> STDataset:
+    return STDataset(
         boxes=np.array([[0.0, 0.0, 10.0, 10.0]]),
-        nuc_cell_id=np.array([10, 20]),
-        nuc_total_tx_counts=np.array([10, 10]),
-        nuc_ctype_idx=np.array([0, 0]),
-        nuc_cell_counts=np.array([10, 10]),
-        nuc_xy=np.array([[0.0, 0.0], [5.0, 5.0]]),
-        nuc_ellipse_mat=np.tile(np.eye(2), (2, 1, 1)),
+        nuc_cell_id=np.array([10, 20, 30]),
+        nuc_total_tx_counts=np.array([10, 10, 10]),
+        nuc_cell_counts=np.array([10, 10, 10]),
+        nuc_xy=np.array([[0.0, 0.0], [5.0, 5.0], [50.0, 50.0]]),
+        nuc_ellipse_mat=np.tile(np.eye(2), (3, 1, 1)),
         nuc_countmat_nuc_idx=np.array([], dtype=int),
         nuc_countmat_gene_idx=np.array([], dtype=int),
         nuc_countmat_counts=np.array([], dtype=int),
         genes=np.array(["GeneA", "GeneB"]),
     )
 
-    adata = create_anndata(
-        ef_tx_fname=str(tx_path),
-        output_fname=str(output_path),
-        dataset=dataset,
-        denovo_min_tx_pctile=0.0,
+
+def _make_original_tx(path):
+    pl.DataFrame(
+        {
+            "transcript_id": np.arange(9, dtype=np.uint64),
+            "x": np.arange(9, dtype=np.float64),
+            "y": np.zeros(9),
+            "overlaps_nucleus": np.zeros(9, dtype=np.uint8),
+        }
+    ).write_parquet(path)
+
+
+def test_classify_clusters_categories(tmp_path):
+    """Anchored needs mahalanobis <= 1 AND centroid distance <= cd_cutoff; the rest
+    are denovo / fragment by n_tx against max(percentile, min_tx_count)."""
+    tx_path = tmp_path / "ef.parquet"
+    _make_original_tx(tmp_path / "orig.parquet")
+    calculate_tx_distances(_make_mapped_tx().lazy(), str(tmp_path / "orig.parquet")).sink_parquet(
+        tx_path
     )
 
-    categories = set(adata.obs["cell_category"].tolist())
-    assert categories == {"original", "denovo"}
-    assert "split" not in categories
-    assert "10_split_2" not in adata.obs.index
-    assert adata.obs.loc["10", "cell_category"] == "original"
-    assert adata.obs.loc["denovo_3", "cell_category"] == "denovo"
+    info, thr = classify_clusters(
+        str(tx_path),
+        nuc_cell_counts=np.array([10, 10, 10]),
+        denovo_min_tx_pctile=0.0,
+        min_tx_count=3,
+    )
+    cats = dict(zip(info["ef_cluster_id"].to_list(), info["cell_category"].to_list()))
+    ids = dict(zip(info["ef_cluster_id"].to_list(), info["unified_cell_id"].to_list()))
+    assert thr == 3.0
+    assert cats == {1: "nucleus_anchored", 2: "fragment", 3: "denovo"}
+    assert ids == {1: "10", 2: "fragment_2", 3: "denovo_3"}
 
-    report = pl.read_parquet(tmp_path / "ef.denovo_filter_report.parquet")
-    assert report.columns == [
-        "ef_cluster_id",
-        "cell_id",
-        "cell_type",
-        "x",
-        "y",
-        "centroid_distance",
-        "mahalanobis_distance",
-        "n_tx",
-        "tx_threshold",
-        "tx_pctile",
-        "passes_tx_filter",
-        "kept",
-    ]
+    ## Percentile wins over the floor when it is larger
+    _, thr = classify_clusters(
+        str(tx_path),
+        nuc_cell_counts=np.array([10, 10, 10]),
+        denovo_min_tx_pctile=50.0,
+        min_tx_count=3,
+    )
+    assert thr == 10.0
+
+
+def test_post_process_merge_outputs(tmp_path):
+    """ef.parquet carries ef_cell_id (UNASSIGNED for noise) and x_initial from the original
+    transcripts; ef.h5ad keeps every cell, including empty nuclei."""
+    mapped = tmp_path / "mapped.parquet"
+    orig = tmp_path / "orig.parquet"
+    noise_meta = tmp_path / "noise_meta.parquet"
+    _make_mapped_tx().write_parquet(mapped)
+    _make_original_tx(orig)
+    pl.DataFrame(
+        {
+            "transcript_id": np.arange(9, dtype=np.int64),
+            "feature_name": ["GeneA"] * 9,
+            "x": np.full(9, 7.0),
+            "y": np.full(9, 7.0),
+            "is_noise": [False] * 7 + [True, True],
+            "tx_noise_prob_0": np.full(9, 0.1, dtype=np.float32),
+            "tx_noise_prob_1": np.array([0.1] * 7 + [0.9, 0.9], dtype=np.float32),
+        }
+    ).write_parquet(noise_meta)
+
+    post_process_merge(
+        mapped_files=[str(mapped)],
+        dataset=_make_dataset(),
+        original_tx_fname=str(orig),
+        output_fname=str(tmp_path / "ef.parquet"),
+        anndata_fname=str(tmp_path / "ef.h5ad"),
+        noise_meta_fname=str(noise_meta),
+        work_dir=str(tmp_path),
+        denovo_min_tx_pctile=0.0,
+        min_tx_count=3,
+    )
+
+    ef = pl.read_parquet(tmp_path / "ef.parquet").sort("transcript_id")
+    assert ef.height == 9
+    assert (
+        ef["ef_cell_id"].to_list()
+        == ["10", "10"] + ["fragment_2"] * 2 + ["denovo_3"] * 3 + ["UNASSIGNED"] * 2
+    )
+    np.testing.assert_array_equal(ef["x_initial"].to_numpy(), np.arange(9, dtype=float))
+
+    adata = anndata.read_h5ad(tmp_path / "ef.h5ad")
+    obs = adata.obs
+    assert set(obs.index) == {"10", "20", "30", "fragment_2", "denovo_3"}
+    assert obs.loc["10", "cell_category"] == "nucleus_anchored"
+    assert obs.loc["30", "cell_category"] == "nucleus_anchored"  # empty nucleus kept
+    assert obs.loc["30", "n_tx"] == 0
+    assert obs.loc["fragment_2", "cell_category"] == "fragment"
+    assert obs.loc["denovo_3", "cell_category"] == "denovo"
+    ## Anchored cells sit at their nucleus centroid; others at their mean flowed position
+    assert (obs.loc["10", "x_centroid"], obs.loc["10", "y_centroid"]) == (0.0, 0.0)
+    np.testing.assert_allclose(obs.loc["denovo_3", "x_centroid"], 5.2)
+    assert adata.uns["denovo_tx_threshold"] == 3.0

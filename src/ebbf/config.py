@@ -67,8 +67,9 @@ class DataConfig:
     max_garbage_intercellular_ratio: float = 10.0
     """Maximum ratio of intercellular-to-uniform garbage transcripts."""
 
-    max_nucleus_swap_prob: float = 0.20
-    """Maximum probability of swapping a transcript's nucleus of origin with a nearby nucleus."""
+    max_nucleus_swap_prob: float = 0.0
+    """Maximum probability of swapping a transcript's nucleus of origin with a nearby nucleus.
+    Off by default (matches nuc_diffusion v5 as trained)."""
 
     nucleus_swap_radius: float = 15.0
     """Radius (in data units) within which nucleus swaps are considered."""
@@ -268,9 +269,6 @@ class EBBFConfig:
     # Dynamic fields set at runtime (not from YAML)
     n_genes: int = 0
     """Number of genes (set dynamically from data)."""
-
-    n_ctypes: int = 1
-    """Number of cell types (set dynamically from data)."""
 
     prev_model_folder: str | None = None
     """Path to previous model folder for continuing training."""

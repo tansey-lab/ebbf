@@ -333,7 +333,7 @@ def load_nucleus_centroids(zarr_dir: str, input_format: str | None = None) -> np
 def build_stdataset(
     zarr_dir: str,
     box_width: float = 400,
-    nuc_density_per_um2: float = 1e-5,
+    nuc_density_per_um2: float = 1e-4,
     input_format: str | None = None,
     tissue_polygon=None,
 ):
@@ -341,8 +341,9 @@ def build_stdataset(
     Build an STDataset from a vendor input directory.
 
     Supports both SpatialData zarr directories and Xenium Ranger output directories.
-    Creates a uniform grid of tiles over the slide area and keeps any tile that
-    meets the minimum nucleus density threshold.
+    Tiles each tissue region (one per polygon of ``tissue_polygon``, analogous to the
+    TMA punches in nuc_diffusion) with overlapping boxes and keeps any box that meets
+    the minimum nucleus density threshold. All nuclei are kept.
 
     Args:
         zarr_dir: Path to input directory. Can be either:
@@ -350,13 +351,11 @@ def build_stdataset(
             - Xenium Ranger output directory with transcripts.parquet,
               nucleus_boundaries.parquet, etc.
         box_width: Width of spatial tiles
-        nuc_density_per_um2: Minimum nucleus density to keep a tile (default: 1e-5)
+        nuc_density_per_um2: Minimum nucleus density to keep a tile (default: 1e-4)
         input_format: Input format, either "spatialdata" or "xenium".
             If None, will auto-detect based on directory contents.
-        tissue_polygon: Optional shapely (Multi)Polygon. When supplied, nuclei
-            whose centroid falls outside the polygon are dropped before
-            gene-count computation, so the resulting STDataset contains only
-            in-tissue data.
+        tissue_polygon: Optional shapely (Multi)Polygon. Each of its parts is tiled
+            separately. If None, the bounding box of all nuclei is tiled.
     """
     num_workers = get_num_cpus()
 
@@ -394,23 +393,6 @@ def build_stdataset(
     nuc_cell_id = nucs.index.values
     S, _, _, c = approximate_ellipse(nucs.geometry.values)
 
-    ## Drop nuclei whose centroids fall outside the tissue polygon. Doing this
-    ## before gene counting means the resulting count matrix is already in the
-    ## filtered nucleus index space.
-    if tissue_polygon is not None:
-        keep = shapely.contains_xy(tissue_polygon, c[:, 0], c[:, 1])
-        n_before = len(nuc_cell_id)
-        nuc_cell_id = nuc_cell_id[keep]
-        c = c[keep]
-        S = S[keep]
-        nucs = nucs.loc[nuc_cell_id]
-        logger.info("Tissue polygon filter: kept %d / %d nuclei", len(nuc_cell_id), n_before)
-        if len(nuc_cell_id) == 0:
-            raise ValueError(
-                "No nuclei centroids fall inside the tissue polygon. "
-                "Check that the polygon is in the same coordinate system as the data."
-            )
-
     cell_id2idx = {x: i for i, x in enumerate(nuc_cell_id)}
 
     ## Process cell shapes (optional)
@@ -442,17 +424,21 @@ def build_stdataset(
         num_workers=(num_workers // 2),
     )
 
-    ## Compute uniform grid of tiles from nucleus bounding box
-    min_x, min_y = c.min(axis=0)
-    max_x, max_y = c.max(axis=0)
-    boxes = _compute_boxes_from_bounds(min_x, min_y, max_x, max_y, box_width)
+    ## Tile each tissue region with boxes (one region per polygon part)
+    if tissue_polygon is not None:
+        regions = shapely.get_parts(tissue_polygon)
+    else:
+        regions = [shapely.box(*c.min(axis=0), *c.max(axis=0))]
+    boxes = np.concatenate(
+        [_compute_boxes_from_bounds(*region.bounds, box_width) for region in regions]
+    )
 
     ## Filter out sparse tiles based on nucleus density
-    nuc_count_thresh = max(1, nuc_density_per_um2 * (box_width**2))
+    nuc_count_thresh = nuc_density_per_um2 * (box_width**2)
     n_nucs_per_box = np.array(
         [
             np.count_nonzero(
-                (c[:, 0] >= box[0]) & (c[:, 1] >= box[1]) & (c[:, 0] < box[2]) & (c[:, 1] < box[3])
+                (c[:, 0] > box[0]) & (c[:, 1] > box[1]) & (c[:, 0] < box[2]) & (c[:, 1] < box[3])
             )
             for box in boxes
         ]
@@ -469,14 +455,10 @@ def build_stdataset(
     nuc_total_tx_counts = nuc_gene_counts.sum(axis=1)
     nuc_gene_counts: coo_array = nuc_gene_counts.tocoo()
 
-    # No cell types - set all to 0
-    nuc_ctype_idx = np.zeros(len(nuc_cell_id), dtype=np.int64)
-
     stdata = STDataset(
         boxes=boxes,
         nuc_cell_id=nuc_cell_id,
         nuc_total_tx_counts=nuc_total_tx_counts,
-        nuc_ctype_idx=nuc_ctype_idx,
         nuc_cell_counts=nuc_cell_counts,
         nuc_xy=c,
         nuc_ellipse_mat=S,
@@ -498,7 +480,6 @@ class STDataset:
         boxes: np.ndarray,
         nuc_cell_id: np.ndarray,
         nuc_total_tx_counts: np.ndarray,
-        nuc_ctype_idx: np.ndarray,
         nuc_cell_counts: np.ndarray,
         nuc_xy: np.ndarray,
         nuc_ellipse_mat: np.ndarray,
@@ -515,7 +496,6 @@ class STDataset:
         self.boxes = boxes
         self.nuc_cell_id = nuc_cell_id
         self.nuc_total_tx_counts = nuc_total_tx_counts
-        self.nuc_ctype_idx = nuc_ctype_idx
         self.nuc_xy = nuc_xy
         self.nuc_ellipse_mat = nuc_ellipse_mat
         self.nuc_countmat_nuc_idx = nuc_countmat_nuc_idx
@@ -536,29 +516,14 @@ class STDataset:
         self.__dict__.update(kwargs)
 
     def save(self, fname: str):
-        # Convert float64 arrays to float32 before saving
-        data = {}
-        for key, val in self.__dict__.items():
-            if val is None:
-                # Don't let np.savez coerce None into an object scalar
-                continue
-            if isinstance(val, np.ndarray) and val.dtype == np.float64:
-                data[key] = val.astype(np.float32)
-            else:
-                data[key] = val
+        # Don't let np.savez coerce None into an object scalar
+        data = {key: val for key, val in self.__dict__.items() if val is not None}
         np.savez_compressed(fname, **data)
 
     @classmethod
     def load(cls, fname: str):
         res = np.load(fname, allow_pickle=True)
-        # Convert float64 arrays to float32 for MPS compatibility
-        converted = {}
-        for key, val in res.items():
-            if isinstance(val, np.ndarray) and val.dtype == np.float64:
-                converted[key] = val.astype(np.float32)
-            else:
-                converted[key] = val
-        return cls(**converted)
+        return cls(**res)
 
     def get_nuc_dataset(
         self, patch_size: float, patch_padding: float, dataset_size: int, min_nucs: int
@@ -577,15 +542,12 @@ class STDataset:
         nuc_total_sums = nuc2genes.sum(axis=1)[:, np.newaxis]
         nuc2gene_probs = (nuc2genes / nuc_total_sums).tocsr()
 
-        # Always use zeros for cell types (no cell type info)
-        nuc2ctypes = np.zeros_like(self.nuc_ctype_idx)
-
         dataset = NuclearPatchDataset(
             nuc2xy=self.nuc_xy,
             nuc2total_gene_count=self.nuc_total_tx_counts,
             nuc2gene_probs=nuc2gene_probs,
-            nuc2ctype=nuc2ctypes,
             nuc2cell_count=self.nuc_cell_counts,
+            punch_bounds=self.boxes,
             patch_size=patch_size,
             patch_padding=patch_padding,
             dataset_size=dataset_size,

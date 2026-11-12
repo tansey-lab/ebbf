@@ -349,7 +349,6 @@ class TranscriptSampler:
         patch_center = nuc_batch.patch_center
         nuc_seqlens = nuc_batch.nuc_seqlens
         nuc2ellipse_mat = nuc_batch.nuc2ellipse_mat
-        nuc2ctype = nuc_batch.nuc2ctype
         nuc2xy = nuc_batch.nuc2xy
 
         B = patch_center.shape[0]
@@ -553,7 +552,6 @@ class TranscriptSampler:
 
             ## Drop it like it's hot
             nuc2xy = nuc2xy[keep_mask]
-            nuc2ctype = nuc2ctype[keep_mask]
             nuc_seqlens = segmented_sum(keep_mask.to(torch.long), nuc_seqlens)
 
             if nuc2ellipse_mat is not None:
@@ -566,7 +564,6 @@ class TranscriptSampler:
             "tx_seqlens": tx_seqlens,
             "tx_is_noise": tx_is_noise,
             "nuc2xy": nuc2xy,
-            "nuc2ctype": nuc2ctype,
             "nuc_seqlens": nuc_seqlens,
         }
 

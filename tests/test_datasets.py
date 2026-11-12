@@ -107,7 +107,6 @@ class TestNuclearPatchDataset:
             ]
         )
         nuc2total_gene_count = np.array([10, 20, 30, 40])
-        nuc2ctype = np.array([0, 0, 1, 1])
         nuc2cell_count = np.array([5, 10, 15, 20])
 
         # Simple sparse matrix for gene probs
@@ -117,8 +116,8 @@ class TestNuclearPatchDataset:
             nuc2xy=nuc_xy,
             nuc2total_gene_count=nuc2total_gene_count,
             nuc2gene_probs=nuc2gene_probs,
-            nuc2ctype=nuc2ctype,
             nuc2cell_count=nuc2cell_count,
+            punch_bounds=np.array([[100.0, 100.0, 120.0, 120.0]]),
             patch_size=100,
             patch_padding=10,
             dataset_size=10,
@@ -138,23 +137,31 @@ class TestNuclearPatchDataset:
         assert "nuc2xy" in patch
         assert patch["nuc2xy"].shape[0] >= simple_dataset.min_nucs
 
-    def test_data_bounds_computed_correctly(self, simple_dataset):
-        """Test that data_min and data_max are computed from nuclei positions."""
-        # nuc_xy = [[100, 100], [120, 100], [100, 120], [120, 120]]
-        assert torch.allclose(simple_dataset.data_min, torch.tensor([100.0, 100.0]))
-        assert torch.allclose(simple_dataset.data_max, torch.tensor([120.0, 120.0]))
-
     def test_patch_center_sampling_in_bounds(self, simple_dataset):
-        """Test that sampled patch centers fall within data bounds."""
+        """Test that sampled patch centers fall within the punch bounds."""
         for _ in range(100):
-            patch_center = torch.rand(1, 2)
-            patch_center = (
-                simple_dataset.data_max - simple_dataset.data_min
-            ) * patch_center + simple_dataset.data_min
-
-            # patch_center should be within [100, 120] for both x and y
+            patch_center = simple_dataset._sample_patch()["patch_center"]
             assert 100 <= patch_center[0, 0].item() <= 120
             assert 100 <= patch_center[0, 1].item() <= 120
+
+    def test_punches_sampled_uniformly(self):
+        """Each punch (box) is chosen with equal probability regardless of its area."""
+        nuc_xy = np.array([[x, y] for x in (0.0, 5.0, 1000.0, 1005.0) for y in (0.0, 5.0)])
+        dataset = NuclearPatchDataset(
+            nuc2xy=nuc_xy,
+            nuc2total_gene_count=np.ones(8),
+            nuc2gene_probs=csr_array(np.eye(8, 10)),
+            nuc2cell_count=np.ones(8),
+            punch_bounds=np.array([[0.0, 0.0, 5.0, 5.0], [1000.0, 0.0, 1005.0, 5.0]]),
+            patch_size=100,
+            patch_padding=10,
+            dataset_size=10,
+            min_nucs=2,
+        )
+        torch.manual_seed(0)
+        xs = [dataset._sample_patch()["patch_center"][0, 0].item() for _ in range(400)]
+        frac_second = np.mean(np.array(xs) > 500)
+        assert 0.4 < frac_second < 0.6
 
     def test_sample_patch_works_after_fork(self, simple_dataset):
         """Test that _sample_patch works in forked subprocess.
@@ -193,7 +200,6 @@ class TestSparseDataset:
             ]
         )
         nuc2total_gene_count = np.ones(5)
-        nuc2ctype = np.zeros(5, dtype=np.int64)
         nuc2cell_count = np.ones(5)
         nuc2gene_probs = csr_array(np.eye(5, 10))
 
@@ -201,25 +207,18 @@ class TestSparseDataset:
             nuc2xy=nuc_xy,
             nuc2total_gene_count=nuc2total_gene_count,
             nuc2gene_probs=nuc2gene_probs,
-            nuc2ctype=nuc2ctype,
             nuc2cell_count=nuc2cell_count,
+            punch_bounds=np.array([[400.0, 300.0, 620.0, 380.0]]),
             patch_size=100,
             patch_padding=10,
             dataset_size=10,
             min_nucs=2,
         )
 
-    def test_data_bounds_match_nuclei(self, sparse_dataset):
-        """Test that data bounds are computed from actual nuclei positions."""
-        # nuc_xy x range: 400-620, y range: 300-380
-        assert torch.allclose(sparse_dataset.data_min, torch.tensor([400.0, 300.0]))
-        assert torch.allclose(sparse_dataset.data_max, torch.tensor([620.0, 380.0]))
-
     def test_rtree_contains_all_nuclei(self, sparse_dataset):
         """Verify RTree contains all nuclei from the dataset."""
-        # Use data_min/data_max which are computed from nuclei positions
-        xmin, ymin = sparse_dataset.data_min.tolist()
-        xmax, ymax = sparse_dataset.data_max.tolist()
+        xmin, ymin = sparse_dataset.nuc2xy.min(dim=0).values.tolist()
+        xmax, ymax = sparse_dataset.nuc2xy.max(dim=0).values.tolist()
 
         # Query for all nuclei using the bounding box
         all_indices = sparse_dataset.rtree.lookup(

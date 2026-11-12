@@ -19,7 +19,6 @@ def instantiate_train_dataloader(
 
     stdata = STDataset.load(dataset_path)
     config.n_genes = stdata.genes.shape[0]
-    config.n_ctypes = 1
 
     dataset = stdata.get_nuc_dataset(
         patch_size=config.data.patch_size,

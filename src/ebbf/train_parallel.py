@@ -17,7 +17,7 @@ from tqdm import tqdm
 from ebbf.config import EBBFConfig
 from ebbf.data.data import instantiate_train_dataloader, instantiate_transcript_sampler
 from ebbf.data.patch import NuclearBatch
-from ebbf.model.model import instantiate_model
+from ebbf.model.model import has_legacy_nuc_embedding, instantiate_model
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,6 @@ class Trainer:
             nuc_ellipse_seqlens=(
                 tx_batch["nuc2ellipse_seqlens"] if "nuc2ellipse_seqlens" in tx_batch else None
             ),
-            nuc_ctypes=(tx_batch["nuc2ctype"] if "nuc2ctype" in tx_batch else None),
         )
 
         ## Velocity loss on the first two output channels
@@ -316,7 +315,9 @@ def main_distributed(
     start_epoch = 0
     if resume_from:
         ckpt = torch.load(resume_from, map_location=device)
-        if "optimizer" in ckpt:
+        ## Adam moments of a legacy per-cell-type nucleus embedding don't fit the single
+        ## embedding, so fine-tuning from a legacy checkpoint starts with a fresh optimizer.
+        if "optimizer" in ckpt and not has_legacy_nuc_embedding(ckpt["model"]):
             optimizer.load_state_dict(ckpt["optimizer"])
             if rank == 0:
                 logger.info("Restored optimizer state from checkpoint")
@@ -372,7 +373,9 @@ def main_single(
     start_epoch = 0
     if resume_from:
         ckpt = torch.load(resume_from, map_location=device)
-        if "optimizer" in ckpt:
+        ## Adam moments of a legacy per-cell-type nucleus embedding don't fit the single
+        ## embedding, so fine-tuning from a legacy checkpoint starts with a fresh optimizer.
+        if "optimizer" in ckpt and not has_legacy_nuc_embedding(ckpt["model"]):
             optimizer.load_state_dict(ckpt["optimizer"])
             logger.info("Restored optimizer state from checkpoint")
         if "epoch" in ckpt:
