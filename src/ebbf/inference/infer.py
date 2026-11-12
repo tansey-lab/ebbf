@@ -82,13 +82,15 @@ class FlowInference:
                 start=0.0, end=1.0, steps=(n_intermediates + 2), device=self.device
             )
 
+            ## torchdiffeq keeps solver time in float64 (as in ndiff); MPS has no float64
+            options = {"dtype": torch.float32} if self.device.type == "mps" else None
             x = odeint(
                 ode_func,
                 batch["tx_xy"],
                 time_grid,
                 atol=self.atol,
                 rtol=self.rtol,
-                options={"dtype": torch.float32},
+                options=options,
             )
 
             ## Scale back to the original coordinates
