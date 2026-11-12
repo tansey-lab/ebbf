@@ -607,7 +607,7 @@ def post_process_merge(
     noise_meta_fname: str | None = None,
     work_dir: str = ".",
     cd_cutoff: float = 2.0,
-    denovo_min_tx_pctile: float = 25.0,
+    denovo_min_tx_pctile: float = 0.0,
     min_tx_count: int = 50,
 ):
     """Steps 6–7: attach original positions, classify clusters, write ef.h5ad and ef.parquet.
@@ -767,7 +767,7 @@ def classify_clusters(
     ef_tx_fname: str,
     nuc_cell_counts: np.ndarray,
     cd_cutoff: float = 2.0,
-    denovo_min_tx_pctile: float = 25.0,
+    denovo_min_tx_pctile: float = 0.0,
     min_tx_count: int = 50,
 ) -> tuple[pl.DataFrame, float]:
     """Classify each ef_cluster_id and give it a cell identifier.
@@ -830,7 +830,7 @@ def create_anndata(
     cluster_info: pl.DataFrame,
     tx_threshold: float,
     cd_cutoff: float = 2.0,
-    denovo_min_tx_pctile: float = 25.0,
+    denovo_min_tx_pctile: float = 0.0,
     min_tx_count: int = 50,
 ):
     """Create the cell x gene AnnData from the transcript assignment table.
@@ -947,7 +947,7 @@ def post_process(
     work_dir: str = ".",
     n_workers: int | None = None,
     cd_cutoff: float = 2.0,
-    denovo_min_tx_pctile: float = 25.0,
+    denovo_min_tx_pctile: float = 0.0,
     min_tx_count: int = 50,
 ):
     """Full single-node pipeline: prepare (steps 1–4), map (step 5), merge (steps 6–7)."""

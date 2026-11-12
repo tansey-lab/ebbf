@@ -38,11 +38,11 @@ def _add_classification_args(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--denovo_min_tx_pctile",
         type=float,
-        default=25.0,
+        default=0.0,
         help=(
             "Non-anchored cells with fewer transcripts than max(this percentile of input"
             " cell transcript counts, --min_tx_count) are 'fragment', the rest 'denovo'"
-            " (default: 25.0; set 0 to use --min_tx_count alone)"
+            " (default: 0, i.e. --min_tx_count alone)"
         ),
     )
     parser.add_argument(
