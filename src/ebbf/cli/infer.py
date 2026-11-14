@@ -47,7 +47,6 @@ def main():
     )
     parser.add_argument(
         "--overwrite",
-        type=bool,
         action=argparse.BooleanOptionalAction,
         help="Overwrite existing output",
     )
