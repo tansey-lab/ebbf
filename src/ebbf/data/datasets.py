@@ -15,6 +15,10 @@ from ebbf.data.utils import RTree, TensorSequence, TorchCSR
 
 logger = logging.getLogger(__name__)
 
+## TxPatchDataset reads the transcripts of this many consecutive boxes in one
+## scan of the transcript file
+BOXES_PER_SCAN = 32
+
 
 class NuclearPatchDataset(Dataset):
     def __init__(
@@ -223,13 +227,13 @@ class TxPatchDataset(IterableDataset):
             )
         self.seeds = {x: (i + 100) for i, x in enumerate(self.patch_coords)}
 
-        ## Gene transcripts of the box whose patches are being generated. Each
-        ## process holds one box's transcripts in memory; because __iter__ walks
-        ## patch_coords, which is grouped by box, the transcript file is scanned
-        ## once per box instead of once per patch.
+        ## Gene transcripts of the boxes whose patches are being generated, read
+        ## for BOXES_PER_SCAN consecutive boxes at a time. Each process holds one
+        ## group's transcripts in memory; because __iter__ walks patch_coords,
+        ## which is grouped by box, the transcript file is scanned once per group
+        ## of boxes instead of once per patch.
         self._tx_columns = ["transcript_id", self.x_col, self.y_col, "feature_name"]
-        self._cached_box_idx: int | None = None
-        self._cached_box_tx: pa.Table | None = None
+        self._cached_box_tx: dict[int, pa.Table] = {}
 
     def __len__(self):
         return len(self.patch_coords)
@@ -240,21 +244,33 @@ class TxPatchDataset(IterableDataset):
         max_cond = (ds.field(self.x_col) <= xmax) & (ds.field(self.y_col) <= ymax)
         return min_cond & max_cond
 
+    def _box_bounds(self, box_idx: int) -> tuple[float, float, float, float]:
+        """Get the union of a box's patch bounds; the last patches extend past the box"""
+        nx_patches, ny_patches = self._box_patch_counts[box_idx]
+        xmin, _, ymin, _ = self._get_patch_bounds(box_idx, 0, 0)
+        _, xmax, _, ymax = self._get_patch_bounds(box_idx, nx_patches - 1, ny_patches - 1)
+        return xmin, xmax, ymin, ymax
+
     def _box_transcripts(self, box_idx: int) -> pa.Table:
-        """Load the gene transcripts covering every patch of a box, once per box"""
-        ## The bounds are the union of the box's patch bounds (the last patches
-        ## extend past the box), computed with _get_patch_bounds so a patch's
-        ## filter selects the same rows, in the same file order, as a filter over
-        ## the full transcript file.
-        if self._cached_box_idx != box_idx:
-            nx_patches, ny_patches = self._box_patch_counts[box_idx]
-            xmin, _, ymin, _ = self._get_patch_bounds(box_idx, 0, 0)
-            _, xmax, _, ymax = self._get_patch_bounds(box_idx, nx_patches - 1, ny_patches - 1)
-            self._cached_box_tx = self.tx_dataset.filter(
-                ds.field("is_gene") & self._bounds_filter(xmin, xmax, ymin, ymax)
+        """Get the gene transcripts covering every patch of a box"""
+        ## Each filter keeps file order and the bounds nest (group, box, patch),
+        ## so a patch's filter selects the same rows, in the same order, as a
+        ## filter over the full transcript file.
+        if box_idx not in self._cached_box_tx:
+            first = box_idx - box_idx % BOXES_PER_SCAN
+            group = range(first, min(first + BOXES_PER_SCAN, len(self.boxes)))
+            box_bounds = {
+                b: self._box_bounds(b) for b in group if min(self._box_patch_counts[b]) > 0
+            }
+            xmins, xmaxs, ymins, ymaxs = zip(*box_bounds.values(), strict=True)
+            group_tx = self.tx_dataset.filter(
+                ds.field("is_gene")
+                & self._bounds_filter(min(xmins), max(xmaxs), min(ymins), max(ymaxs))
             ).to_table(self._tx_columns)
-            self._cached_box_idx = box_idx
-        return self._cached_box_tx
+            self._cached_box_tx = {
+                b: group_tx.filter(self._bounds_filter(*bounds)) for b, bounds in box_bounds.items()
+            }
+        return self._cached_box_tx[box_idx]
 
     def _get_patch_bounds(
         self, box_idx: int, patch_i: int, patch_j: int

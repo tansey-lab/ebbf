@@ -10,6 +10,7 @@ import pytest
 import torch
 from scipy.sparse import csr_array
 
+from ebbf.data import datasets
 from ebbf.data.datasets import NuclearPatchDataset, TxPatchDataset
 from ebbf.data.utils import RTree
 
@@ -295,8 +296,12 @@ class TestTxPatchDataset:
             y_col="y_location",
         )
 
-    def test_patches_get_the_rows_of_a_full_file_filter(self, tx_dataset):
+    @pytest.mark.parametrize("boxes_per_scan", [1, 32])
+    def test_patches_get_the_rows_of_a_full_file_filter(
+        self, tx_dataset, monkeypatch, boxes_per_scan
+    ):
         """Each patch gets the rows, in file order, that filtering the whole file selects"""
+        monkeypatch.setattr(datasets, "BOXES_PER_SCAN", boxes_per_scan)
         dataset = self._make(tx_dataset)
         elements = {tuple(e["patch_indices"][0].tolist()): e for e in dataset}
         assert len(elements) == len(dataset)
@@ -322,12 +327,16 @@ class TestTxPatchDataset:
                 [gene_idx[g] for g in expected["feature_name"].to_pylist()],
             )
 
-    def test_scans_the_transcript_file_once_per_box(self, tx_dataset):
+    @pytest.mark.parametrize(("boxes_per_scan", "n_scans"), [(1, 2), (32, 1)])
+    def test_scans_the_transcript_file_once_per_group_of_boxes(
+        self, tx_dataset, monkeypatch, boxes_per_scan, n_scans
+    ):
+        monkeypatch.setattr(datasets, "BOXES_PER_SCAN", boxes_per_scan)
         counting = _CountingDataset(tx_dataset)
         dataset = self._make(counting)
         n_elements = sum(1 for _ in dataset)
         assert n_elements == len(dataset) > len(self.BOXES)
-        assert counting.n_filters == len(self.BOXES)
+        assert counting.n_filters == n_scans
 
     def test_pickles_after_iteration(self, tx_dataset):
         """A DataLoader that spawns workers pickles the dataset, possibly after a pass"""
