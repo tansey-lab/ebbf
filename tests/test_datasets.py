@@ -1,11 +1,17 @@
 """Tests for the datasets module, particularly patch sampling behavior."""
 
+import pickle
+
 import numpy as np
+import pyarrow as pa
+import pyarrow.dataset as ds
+import pyarrow.parquet as pq
 import pytest
 import torch
 from scipy.sparse import csr_array
 
-from ebbf.data.datasets import NuclearPatchDataset
+from ebbf.data import datasets
+from ebbf.data.datasets import NuclearPatchDataset, TxPatchDataset
 from ebbf.data.utils import RTree
 
 
@@ -236,3 +242,106 @@ class TestSparseDataset:
 
         assert patch is not None
         assert patch["nuc2xy"].shape[0] >= sparse_dataset.min_nucs
+
+
+class _CountingDataset:
+    """Count the filters run against a pyarrow dataset"""
+
+    def __init__(self, dataset: ds.Dataset):
+        self.dataset = dataset
+        self.n_filters = 0
+
+    def filter(self, expression: ds.Expression) -> ds.Dataset:
+        self.n_filters += 1
+        return self.dataset.filter(expression)
+
+
+class TestTxPatchDataset:
+    """Tests for TxPatchDataset transcript loading."""
+
+    GENES = np.array(["A", "B", "C"])
+    BOXES = np.array([[0.0, 0.0, 200.0, 200.0], [250.0, 100.0, 450.0, 300.0]])
+
+    @pytest.fixture
+    def tx_dataset(self, tmp_path) -> ds.Dataset:
+        rng = np.random.default_rng(0)
+        n = 20_000
+        table = pa.table(
+            {
+                "transcript_id": np.arange(n, dtype=np.uint64),
+                "x_location": rng.uniform(0, 500, n).astype(np.float32),
+                "y_location": rng.uniform(0, 500, n).astype(np.float32),
+                "feature_name": rng.choice(self.GENES, n),
+                "is_gene": rng.uniform(size=n) > 0.1,
+            }
+        )
+        path = tmp_path / "transcripts.parquet"
+        pq.write_table(table, path, row_group_size=1_000)
+        return ds.dataset(path, format="parquet")
+
+    def _make(self, tx_dataset) -> TxPatchDataset:
+        ## Nuclei on a 20 um grid so that every patch has nuclei and is yielded
+        grid = np.arange(0.0, 501.0, 20.0)
+        nuc_xy = np.stack(np.meshgrid(grid, grid), axis=-1).reshape(-1, 2)
+        return TxPatchDataset(
+            boxes=self.BOXES,
+            tx_dataset=tx_dataset,
+            nuc_xy=nuc_xy,
+            genes=self.GENES,
+            patch_size=100.0,
+            patch_padding=100.0,
+            overlap=20.0,
+            max_tx=1_000_000,
+            x_col="x_location",
+            y_col="y_location",
+        )
+
+    @pytest.mark.parametrize("boxes_per_scan", [1, 32])
+    def test_patches_get_the_rows_of_a_full_file_filter(
+        self, tx_dataset, monkeypatch, boxes_per_scan
+    ):
+        """Each patch gets the rows, in file order, that filtering the whole file selects"""
+        monkeypatch.setattr(datasets, "BOXES_PER_SCAN", boxes_per_scan)
+        dataset = self._make(tx_dataset)
+        elements = {tuple(e["patch_indices"][0].tolist()): e for e in dataset}
+        assert len(elements) == len(dataset)
+
+        for box_idx, patch_i, patch_j in dataset.patch_coords:
+            ## Patch bounds as the dataset defines them; the last patches of a
+            ## box extend past the box edge
+            xmin, xmax, ymin, ymax = dataset._get_patch_bounds(box_idx, patch_i, patch_j)
+            expected = tx_dataset.filter(
+                ds.field("is_gene")
+                & (ds.field("x_location") >= xmin)
+                & (ds.field("y_location") >= ymin)
+                & (ds.field("x_location") <= xmax)
+                & (ds.field("y_location") <= ymax)
+            ).to_table()
+            element = elements[(box_idx, patch_i, patch_j)]
+            np.testing.assert_array_equal(
+                element["tx_idx"].numpy(), expected["transcript_id"].to_numpy().astype(np.int64)
+            )
+            gene_idx = {g: i for i, g in enumerate(self.GENES)}
+            np.testing.assert_array_equal(
+                element["tx_gene_idx"].numpy(),
+                [gene_idx[g] for g in expected["feature_name"].to_pylist()],
+            )
+
+    @pytest.mark.parametrize(("boxes_per_scan", "n_scans"), [(1, 2), (32, 1)])
+    def test_scans_the_transcript_file_once_per_group_of_boxes(
+        self, tx_dataset, monkeypatch, boxes_per_scan, n_scans
+    ):
+        monkeypatch.setattr(datasets, "BOXES_PER_SCAN", boxes_per_scan)
+        counting = _CountingDataset(tx_dataset)
+        dataset = self._make(counting)
+        n_elements = sum(1 for _ in dataset)
+        assert n_elements == len(dataset) > len(self.BOXES)
+        assert counting.n_filters == n_scans
+
+    def test_pickles_after_iteration(self, tx_dataset):
+        """A DataLoader that spawns workers pickles the dataset, possibly after a pass"""
+        dataset = self._make(tx_dataset)
+        first = [e["tx_idx"] for e in dataset]
+        again = [e["tx_idx"] for e in pickle.loads(pickle.dumps(dataset))]
+        assert len(first) == len(again)
+        assert all(torch.equal(a, b) for a, b in zip(first, again))

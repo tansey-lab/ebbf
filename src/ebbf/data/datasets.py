@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from copy import deepcopy
 
 import numpy as np
+import pyarrow as pa
 import pyarrow.dataset as ds
 import torch
 from scipy.sparse import csr_array
@@ -13,6 +14,10 @@ from ebbf.data.patch import NuclearBatch
 from ebbf.data.utils import RTree, TensorSequence, TorchCSR
 
 logger = logging.getLogger(__name__)
+
+## TxPatchDataset reads the transcripts of this many consecutive boxes in one
+## scan of the transcript file
+BOXES_PER_SCAN = 32
 
 
 class NuclearPatchDataset(Dataset):
@@ -212,16 +217,60 @@ class TxPatchDataset(IterableDataset):
         # Calculate patch grid
         self.step_size = patch_size - overlap
         self.patch_coords = []
+        self._box_patch_counts = []
         for box_idx, (xmin, ymin, xmax, ymax) in enumerate(self.boxes):
             nx_patches = math.ceil((xmax - xmin - overlap) / self.step_size)
             ny_patches = math.ceil((ymax - ymin - overlap) / self.step_size)
+            self._box_patch_counts.append((nx_patches, ny_patches))
             self.patch_coords.extend(
                 [(box_idx, i, j) for i in range(nx_patches) for j in range(ny_patches)]
             )
         self.seeds = {x: (i + 100) for i, x in enumerate(self.patch_coords)}
 
+        ## Gene transcripts of the boxes whose patches are being generated, read
+        ## for BOXES_PER_SCAN consecutive boxes at a time. Each process holds one
+        ## group's transcripts in memory; because __iter__ walks patch_coords,
+        ## which is grouped by box, the transcript file is scanned once per group
+        ## of boxes instead of once per patch.
+        self._tx_columns = ["transcript_id", self.x_col, self.y_col, "feature_name"]
+        self._cached_box_tx: dict[int, pa.Table] = {}
+
     def __len__(self):
         return len(self.patch_coords)
+
+    def _bounds_filter(self, xmin: float, xmax: float, ymin: float, ymax: float) -> ds.Expression:
+        """Select transcripts inside the bounds, edges included"""
+        min_cond = (ds.field(self.x_col) >= xmin) & (ds.field(self.y_col) >= ymin)
+        max_cond = (ds.field(self.x_col) <= xmax) & (ds.field(self.y_col) <= ymax)
+        return min_cond & max_cond
+
+    def _box_bounds(self, box_idx: int) -> tuple[float, float, float, float]:
+        """Get the union of a box's patch bounds; the last patches extend past the box"""
+        nx_patches, ny_patches = self._box_patch_counts[box_idx]
+        xmin, _, ymin, _ = self._get_patch_bounds(box_idx, 0, 0)
+        _, xmax, _, ymax = self._get_patch_bounds(box_idx, nx_patches - 1, ny_patches - 1)
+        return xmin, xmax, ymin, ymax
+
+    def _box_transcripts(self, box_idx: int) -> pa.Table:
+        """Get the gene transcripts covering every patch of a box"""
+        ## Each filter keeps file order and the bounds nest (group, box, patch),
+        ## so a patch's filter selects the same rows, in the same order, as a
+        ## filter over the full transcript file.
+        if box_idx not in self._cached_box_tx:
+            first = box_idx - box_idx % BOXES_PER_SCAN
+            group = range(first, min(first + BOXES_PER_SCAN, len(self.boxes)))
+            box_bounds = {
+                b: self._box_bounds(b) for b in group if min(self._box_patch_counts[b]) > 0
+            }
+            xmins, xmaxs, ymins, ymaxs = zip(*box_bounds.values(), strict=True)
+            group_tx = self.tx_dataset.filter(
+                ds.field("is_gene")
+                & self._bounds_filter(min(xmins), max(xmaxs), min(ymins), max(ymaxs))
+            ).to_table(self._tx_columns)
+            self._cached_box_tx = {
+                b: group_tx.filter(self._bounds_filter(*bounds)) for b, bounds in box_bounds.items()
+            }
+        return self._cached_box_tx[box_idx]
 
     def _get_patch_bounds(
         self, box_idx: int, patch_i: int, patch_j: int
@@ -251,11 +300,8 @@ class TxPatchDataset(IterableDataset):
         res["patch_indices"] = torch.tensor([[box_idx, patch_i, patch_j]], dtype=torch.int64)
 
         # Get the transcript info
-        gene_cond = ds.field("is_gene")
-        min_cond = (ds.field(self.x_col) >= xmin) & (ds.field(self.y_col) >= ymin)
-        max_cond = (ds.field(self.x_col) <= xmax) & (ds.field(self.y_col) <= ymax)
-        patch_table = self.tx_dataset.filter(gene_cond & min_cond & max_cond).to_table(
-            ["transcript_id", self.x_col, self.y_col, "feature_name"]
+        patch_table = self._box_transcripts(box_idx).filter(
+            self._bounds_filter(xmin, xmax, ymin, ymax)
         )
 
         res["tx_xy"] = torch.from_numpy(
