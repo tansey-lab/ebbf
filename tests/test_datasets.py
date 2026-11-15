@@ -236,3 +236,64 @@ class TestSparseDataset:
 
         assert patch is not None
         assert patch["nuc2xy"].shape[0] >= sparse_dataset.min_nucs
+
+
+class TestTxPatchDataset:
+    """Tests for TxPatchDataset transcript loading."""
+
+    @pytest.fixture
+    def tx_dataset(self, tmp_path):
+        import pyarrow as pa
+        import pyarrow.dataset as ds
+        import pyarrow.parquet as pq
+
+        rng = np.random.default_rng(0)
+        n = 20_000
+        table = pa.table(
+            {
+                "transcript_id": np.arange(n, dtype=np.uint64),
+                "x_location": rng.uniform(0, 500, n).astype(np.float32),
+                "y_location": rng.uniform(0, 500, n).astype(np.float32),
+                "feature_name": rng.choice(["A", "B", "C"], n),
+                "is_gene": rng.uniform(size=n) > 0.1,
+            }
+        )
+        path = tmp_path / "transcripts.parquet"
+        pq.write_table(table, path, row_group_size=1_000)
+        return ds.dataset(path, format="parquet")
+
+    def test_patch_rows_match_a_full_file_filter(self, tx_dataset):
+        """Each patch selects the rows, in file order, that filtering the whole file selects."""
+        import pyarrow.dataset as ds
+
+        from ebbf.data.datasets import TxPatchDataset
+
+        boxes = np.array([[0.0, 0.0, 200.0, 200.0], [250.0, 100.0, 450.0, 300.0]])
+        dataset = TxPatchDataset(
+            boxes=boxes,
+            tx_dataset=tx_dataset,
+            nuc_xy=np.array([[100.0, 100.0], [350.0, 200.0]]),
+            genes=np.array(["A", "B", "C"]),
+            patch_size=100.0,
+            patch_padding=100.0,
+            overlap=20.0,
+            max_tx=1_000_000,
+            x_col="x_location",
+            y_col="y_location",
+        )
+
+        n_patches = 0
+        for box_idx, patch_i, patch_j in dataset.patch_coords:
+            xmin, xmax, ymin, ymax = dataset._get_patch_bounds(box_idx, patch_i, patch_j)
+            expected = tx_dataset.filter(
+                ds.field("is_gene")
+                & (ds.field("x_location") >= xmin)
+                & (ds.field("y_location") >= ymin)
+                & (ds.field("x_location") <= xmax)
+                & (ds.field("y_location") <= ymax)
+            ).to_table(["transcript_id"])["transcript_id"]
+            elements = list(dataset._generate_subsets_for_patch(box_idx, patch_i, patch_j))
+            got = elements[0]["tx_idx"].numpy() if elements else np.array([], dtype=np.int64)
+            np.testing.assert_array_equal(got, expected.to_numpy().astype(np.int64))
+            n_patches += 1
+        assert n_patches == len(dataset)
